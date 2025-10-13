@@ -1,34 +1,52 @@
 import cv2 as cv
 import mediapipe as mp
 import numpy as np
+import time
+import pyttsx3
+import threading
 
-# Function to calculate angle between three points (in degrees)
+# --- Function to handle speaking in a separate thread ---
+def speak(engine, text):
+    engine.say(text)
+    engine.runAndWait()
+
+# Function to calculate angle
 def calculate_angle(a, b, c):
-    a = np.array(a)
-    b = np.array(b)
-    c = np.array(c)
-    ba = a - b
-    bc = c - b
-    dot_product = np.dot(ba, bc)
-    magnitude_ba = np.linalg.norm(ba)
-    magnitude_bc = np.linalg.norm(bc)
-    if magnitude_ba == 0 or magnitude_bc == 0:
-        return 0.0
-    cosine_angle = dot_product / (magnitude_ba * magnitude_bc)
-    cosine_angle = np.clip(cosine_angle, -1.0, 1.0)
-    angle = np.arccos(cosine_angle)
-    return np.degrees(angle)
+    a = np.array(a); b = np.array(b); c = np.array(c)
+    radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
+    angle = np.abs(radians*180.0/np.pi)
+    if angle > 180.0:
+        angle = 360-angle
+    return angle
+
+# --- Initialize ONE engine instance for the whole application ---
+tts_engine = pyttsx3.init()
 
 mpDraw = mp.solutions.drawing_utils
 mpPose = mp.solutions.pose
-pose = mpPose.Pose()
+pose = mpPose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
 cap = cv.VideoCapture(0)
 
+# --- State Machine & Rep Counter Variables ---
+rep_counter = 0
+stage = 'DOWN'
+
+# --- NEW Smart Feedback Variables ---
+persistent_error = None
+error_start_time = None
+ERROR_DURATION_THRESHOLD = 2.0  # Hold an error for 2 seconds to trigger
+VOICE_COOLDOWN = 5.0            # Wait 5 seconds between voice alerts
+last_voice_alert_time = 0
+
+# Setup for full screen
+WINDOW_NAME = "Shoulder Press AI Coach"
+cv.namedWindow(WINDOW_NAME, cv.WINDOW_NORMAL)
+cv.setWindowProperty(WINDOW_NAME, cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
+
 while True:
     success, img = cap.read()
-    if not success:
-        break
+    if not success: break
     
     img = cv.flip(img, 1)
     imgRGB = cv.cvtColor(img, cv.COLOR_BGR2RGB)
@@ -38,88 +56,92 @@ while True:
         if results.pose_landmarks:
             landmarks = results.pose_landmarks.landmark
             
-            # Right side landmarks (front view)
-            rshoulder = [landmarks[mpPose.PoseLandmark.RIGHT_SHOULDER.value].x, landmarks[mpPose.PoseLandmark.RIGHT_SHOULDER.value].y]
-            relbow = [landmarks[mpPose.PoseLandmark.RIGHT_ELBOW.value].x, landmarks[mpPose.PoseLandmark.RIGHT_ELBOW.value].y]
-            rwrist = [landmarks[mpPose.PoseLandmark.RIGHT_WRIST.value].x, landmarks[mpPose.PoseLandmark.RIGHT_WRIST.value].y]
-            rhip = [landmarks[mpPose.PoseLandmark.RIGHT_HIP.value].x, landmarks[mpPose.PoseLandmark.RIGHT_HIP.value].y]
-            # Left side landmarks
-            lshoulder = [landmarks[mpPose.PoseLandmark.LEFT_SHOULDER.value].x, landmarks[mpPose.PoseLandmark.LEFT_SHOULDER.value].y]
-            lelbow = [landmarks[mpPose.PoseLandmark.LEFT_ELBOW.value].x, landmarks[mpPose.PoseLandmark.LEFT_ELBOW.value].y]
-            lwrist = [landmarks[mpPose.PoseLandmark.LEFT_WRIST.value].x, landmarks[mpPose.PoseLandmark.LEFT_WRIST.value].y]
-            lhip = [landmarks[mpPose.PoseLandmark.LEFT_HIP.value].x, landmarks[mpPose.PoseLandmark.LEFT_HIP.value].y]
+            # Get coordinates
+            rshoulder, relbow, rwrist, rhip = ([landmarks[mpPose.PoseLandmark.RIGHT_SHOULDER.value].x, landmarks[mpPose.PoseLandmark.RIGHT_SHOULDER.value].y], 
+                                               [landmarks[mpPose.PoseLandmark.RIGHT_ELBOW.value].x, landmarks[mpPose.PoseLandmark.RIGHT_ELBOW.value].y], 
+                                               [landmarks[mpPose.PoseLandmark.RIGHT_WRIST.value].x, landmarks[mpPose.PoseLandmark.RIGHT_WRIST.value].y], 
+                                               [landmarks[mpPose.PoseLandmark.RIGHT_HIP.value].x, landmarks[mpPose.PoseLandmark.RIGHT_HIP.value].y])
+            lshoulder, lelbow, lwrist, lhip = ([landmarks[mpPose.PoseLandmark.LEFT_SHOULDER.value].x, landmarks[mpPose.PoseLandmark.LEFT_SHOULDER.value].y], 
+                                               [landmarks[mpPose.PoseLandmark.LEFT_ELBOW.value].x, landmarks[mpPose.PoseLandmark.LEFT_ELBOW.value].y], 
+                                               [landmarks[mpPose.PoseLandmark.LEFT_WRIST.value].x, landmarks[mpPose.PoseLandmark.LEFT_WRIST.value].y], 
+                                               [landmarks[mpPose.PoseLandmark.LEFT_HIP.value].x, landmarks[mpPose.PoseLandmark.LEFT_HIP.value].y])
 
-            # Calculate elbow angles (shoulder - elbow - wrist)
+            # Calculate angles
             r_elbow_angle = calculate_angle(rshoulder, relbow, rwrist)
             l_elbow_angle = calculate_angle(lshoulder, lelbow, lwrist)
-            rhip_angle = calculate_angle(rhip, rshoulder, relbow)
-            lhip_angle = calculate_angle(lhip, lshoulder, lelbow)
+            r_shoulder_angle = calculate_angle(rhip, rshoulder, relbow)
+            l_shoulder_angle = calculate_angle(lhip, lshoulder, lelbow)
+            shoulder_level_diff = abs(rshoulder[1] - lshoulder[1])
 
-            # Calculate shoulder alignment (horizontal distance between shoulders)
-            # We use y difference to check if shoulders are level frontally
-            shoulder_level_diff = abs(landmarks[mpPose.PoseLandmark.RIGHT_SHOULDER.value].y - landmarks[mpPose.PoseLandmark.LEFT_SHOULDER.value].y)
-
-            h, w, _ = img.shape
+            # State Machine & Rep Counter Logic
+            if r_elbow_angle > 160 and l_elbow_angle > 160 and stage == 'DOWN':
+                rep_counter += 1
+                stage = 'UP'
+            elif r_elbow_angle < 90 and l_elbow_angle < 90:
+                stage = 'DOWN'
             
-            # Convert to pixels for drawing
-            rshoulder_px = (int(rshoulder[0] * w), int(rshoulder[1] * h))
-            relbow_px = (int(relbow[0] * w), int(relbow[1] * h))
-            rwrist_px = (int(rwrist[0] * w), int(rwrist[1] * h))
-            rhip_px = (int(rhip[0] * w), int(rhip[1] * h))
+            # --- Determine current error for both voice and visual ---
+            current_error = None
+            if shoulder_level_diff > 0.05:
+                current_error = "Keep shoulders level"
+            elif r_shoulder_angle < 70 or l_shoulder_angle < 70:
+                current_error = "Bring your elbows up"
+            elif (r_elbow_angle > 110 and r_shoulder_angle < 115) or \
+                 (l_elbow_angle > 110 and l_shoulder_angle < 115):
+                current_error = "Tuck your elbows in"
+            elif r_elbow_angle < 50 or l_elbow_angle < 50:
+                current_error = "Elbows too close to shoulders"
 
-            lshoulder_px = (int(lshoulder[0] * w), int(lshoulder[1] * h))
-            lelbow_px = (int(lelbow[0] * w), int(lelbow[1] * h))
-            lwrist_px = (int(lwrist[0] * w), int(lwrist[1] * h))
-            lhip_px = (int(lhip[0] * w), int(lhip[1] * h))
+            # =====================================================================
+            # --- NEW VOICE FEEDBACK LOGIC ---
+            # =====================================================================
+            if current_error:
+                # If this is a new error, start its timer
+                if current_error != persistent_error:
+                    persistent_error = current_error
+                    error_start_time = time.time()
+                
+                # Check if the error has been held long enough
+                if time.time() - error_start_time >= ERROR_DURATION_THRESHOLD:
+                    # Check if the global voice cooldown has passed
+                    if time.time() - last_voice_alert_time >= VOICE_COOLDOWN:
+                        thread = threading.Thread(target=speak, args=(tts_engine, persistent_error))
+                        thread.start()
+                        last_voice_alert_time = time.time() # Reset the global cooldown timer
+            else:
+                # If there's no error, reset the persistence tracker
+                persistent_error = None
+                error_start_time = None
 
-            # Draw circles on landmarks
-            for px in [rshoulder_px, relbow_px, rwrist_px, lshoulder_px, lelbow_px, lwrist_px, rhip_px, lhip_px]:
-                cv.circle(img, px, 10, (0, 255, 0), cv.FILLED)
-
-            # Display elbow angles on image
-            cv.putText(img, f"Right Elbow: {int(r_elbow_angle)}°", (30, 90),
-                       cv.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv.LINE_AA)
-            cv.putText(img, f"Left Elbow: {int(l_elbow_angle)}°", (30, 130),
-                       cv.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv.LINE_AA)
-            # cv.putText(img, f"Right hip: {int(rhip_angle)}°", (200, 90),
-            #            cv.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv.LINE_AA)
-            # cv.putText(img, f"Left hip: {int(lhip_angle)}°", (200, 130),
-            #            cv.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv.LINE_AA)
-
-            warnings = []
-
-            # Warning if elbow angles indicate excessive flare or rigid lock
-            if r_elbow_angle > 100 and rhip_angle < 115:
-                warnings.append("Right elbow flare too wide!")
-            if l_elbow_angle > 100 and lhip_angle < 115:
-                warnings.append("Left elbow flare too wide!")
-            if r_elbow_angle < 40:
-                warnings.append("Right elbow too close to body!")
-            if l_elbow_angle < 40:
-                warnings.append("Left elbow too close to body!")
-            if rhip_angle < 70:
-                warnings.append("Right arm too far down!")
-            if lhip_angle < 70:
-                warnings.append("Left arm too far down!")
-
-            # Warning if shoulders are uneven (threshold depends on normalized coordinates, e.g., >0.03)
-            if shoulder_level_diff > 0.03:
-                warnings.append("Shoulders not level!")
-
-            # Display warnings
-            y0 = 170
-            for i, w_msg in enumerate(warnings):
-                cv.putText(img, w_msg, (30, y0 + i * 30), cv.FONT_HERSHEY_SIMPLEX,
-                           0.7, (0, 0, 255), 2, cv.LINE_AA)
-
+            # --- Visual Feedback Logic (State-Dependent) ---
+            visual_feedback = "Good Form"
+            if stage == 'DOWN' and current_error:
+                visual_feedback = current_error
+            
+            # --- Drawing and UI ---
+            overlay = img.copy()
+            alpha = 0.6
+            cv.rectangle(overlay, (10, 10), (340, 130), (20, 20, 20), -1)
+            img = cv.addWeighted(overlay, alpha, img, 1 - alpha, 0)
+            
+            feedback_color = (0, 255, 0) if visual_feedback == "Good Form" else (0, 0, 255)
+            cv.putText(img, "REPS", (30, 40), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv.LINE_AA)
+            cv.putText(img, str(rep_counter), (35, 85), cv.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 3, cv.LINE_AA)
+            cv.putText(img, "STAGE", (130, 40), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv.LINE_AA)
+            cv.putText(img, stage.upper(), (130, 85), cv.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 3, cv.LINE_AA)
+            cv.putText(img, "COACH", (30, 120), cv.FONT_HERSHEY_SIMPLEX, 0.7, feedback_color, 2, cv.LINE_AA)
+            cv.putText(img, visual_feedback, (130, 120), cv.FONT_HERSHEY_SIMPLEX, 0.7, feedback_color, 2, cv.LINE_AA)
+            
             mpDraw.draw_landmarks(img, results.pose_landmarks, mpPose.POSE_CONNECTIONS)
-
-    except Exception:
+            
+    except Exception as e:
         pass
 
-    cv.imshow("Shoulder Press Front View Monitoring", img)
+    cv.imshow(WINDOW_NAME, img)
+    
     if cv.waitKey(1) & 0xFF == ord('q'):
         break
 
 cap.release()
 cv.destroyAllWindows()
+tts_engine.stop()
