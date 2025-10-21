@@ -4,11 +4,22 @@ import numpy as np
 import time
 import pyttsx3
 import threading
+from queue import Queue
 
-# --- Function to handle speaking in a separate thread ---
-def speak(engine, text):
-    engine.say(text)
-    engine.runAndWait()
+# --- Thread-safe queue for TTS ---
+tts_queue = Queue()
+
+def tts_worker(engine):
+    """Background thread that handles all TTS calls"""
+    while True:
+        text = tts_queue.get()
+        if text is None:  # Sentinel value to stop thread
+            break
+        try:
+            engine.say(text)
+            engine.runAndWait()
+        except:
+            pass
 
 # Function to calculate angle
 def calculate_angle(a, b, c):
@@ -19,8 +30,11 @@ def calculate_angle(a, b, c):
         angle = 360-angle
     return angle
 
-# --- Initialize ONE engine instance for the whole application ---
+# --- Initialize TTS engine and worker thread ---
 tts_engine = pyttsx3.init()
+tts_engine.setProperty('rate', 150)  # Slower speech for clarity
+tts_thread = threading.Thread(target=tts_worker, args=(tts_engine,), daemon=True)
+tts_thread.start()
 
 mpDraw = mp.solutions.drawing_utils
 mpPose = mp.solutions.pose
@@ -32,12 +46,13 @@ cap = cv.VideoCapture(0)
 rep_counter = 0
 stage = 'DOWN'
 
-# --- NEW Smart Feedback Variables ---
+# --- Smart Feedback Variables ---
 persistent_error = None
 error_start_time = None
-ERROR_DURATION_THRESHOLD = 2.0  # Hold an error for 2 seconds to trigger
-VOICE_COOLDOWN = 5.0            # Wait 5 seconds between voice alerts
 last_voice_alert_time = 0
+
+ERROR_DURATION_THRESHOLD = 2.0  # 2 seconds before voice alert
+VOICE_COOLDOWN = 5.0            # 5 seconds between alerts for SAME error
 
 # Setup for full screen
 WINDOW_NAME = "Shoulder Press AI Coach"
@@ -80,7 +95,7 @@ while True:
             elif r_elbow_angle < 90 and l_elbow_angle < 90:
                 stage = 'DOWN'
             
-            # --- Determine current error for both voice and visual ---
+            # --- Determine current error ---
             current_error = None
             if shoulder_level_diff > 0.05:
                 current_error = "Keep shoulders level"
@@ -93,23 +108,25 @@ while True:
                 current_error = "Elbows too close to shoulders"
 
             # =====================================================================
-            # --- NEW VOICE FEEDBACK LOGIC ---
+            # --- FIXED VOICE FEEDBACK LOGIC ---
             # =====================================================================
+            current_time = time.time()
+            
             if current_error:
-                # If this is a new error, start its timer
+                # If error changed, reset timer
                 if current_error != persistent_error:
                     persistent_error = current_error
-                    error_start_time = time.time()
+                    error_start_time = current_time
                 
-                # Check if the error has been held long enough
-                if time.time() - error_start_time >= ERROR_DURATION_THRESHOLD:
-                    # Check if the global voice cooldown has passed
-                    if time.time() - last_voice_alert_time >= VOICE_COOLDOWN:
-                        thread = threading.Thread(target=speak, args=(tts_engine, persistent_error))
-                        thread.start()
-                        last_voice_alert_time = time.time() # Reset the global cooldown timer
+                # Check if error has persisted for 2+ seconds
+                error_duration = current_time - error_start_time
+                if error_duration >= ERROR_DURATION_THRESHOLD:
+                    # Check if enough time has passed since last alert for THIS error
+                    if current_time - last_voice_alert_time >= VOICE_COOLDOWN:
+                        tts_queue.put(persistent_error)
+                        last_voice_alert_time = current_time
             else:
-                # If there's no error, reset the persistence tracker
+                # No current error, reset
                 persistent_error = None
                 error_start_time = None
 
@@ -144,4 +161,6 @@ while True:
 
 cap.release()
 cv.destroyAllWindows()
+tts_queue.put(None)  # Signal TTS thread to stop
+tts_thread.join()
 tts_engine.stop()
