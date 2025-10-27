@@ -1,10 +1,34 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
+import 'dart:isolate';
+import 'dart:typed_data'; // We need this for Uint8List
 import 'dart:async';
 import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/io.dart'; 
+import 'package:flutter/foundation.dart';
 
+/// This function runs in a separate isolate (background thread)
+/// to avoid freezing the UI.
+String _processFrameOnIsolate(Map<String, dynamic> params) {
+  // 1. Get the data from the main thread
+  final Uint8List bytes = params['bytes'];
+  final int width = params['width'];
+  final int height = params['height'];
+  final int bytesPerRow = params['bytesPerRow'];
+
+  // 2. Do all the heavy work here
+  final String base64Image = base64Encode(bytes);
+  final Map<String, dynamic> frameData = {
+    'frame': base64Image,
+    'width': width,
+    'height': height,
+    'bytesPerRow': bytesPerRow,
+  };
+  
+  // 3. Return the final JSON string
+  return jsonEncode(frameData);
+}
 // Placeholder for backend response structure
 class Feedback {
   final int reps;
@@ -23,7 +47,7 @@ class Feedback {
 
   factory Feedback.fromJson(Map<String, dynamic> json) {
     return Feedback(
-      reps: json['reps'] ?? 0,
+      reps: json['reps'] ?? 0, 
       time: json['time'] ?? '00:00', // Backend might send this, or client tracks it
       error: json['error'] ?? '',
       adjustment: json['adjustment'] ?? '',
@@ -56,7 +80,7 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
 
   // --- IMPORTANT ---
   // Replace with your computer's local IP address and the port used by the Python server
-  final String _backendIpAddress = "192.168.1.XX"; // E.g., "192.168.1.100"
+  final String _backendIpAddress = "10.61.76.179"; // E.g., "192.168.1.100"
   final int _backendPort = 8765;
   // ---------------
 
@@ -71,11 +95,30 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
   Future<void> _initializeCamera() async {
     final cameras = await availableCameras();
     if (cameras.isNotEmpty) {
-      _cameraController = CameraController(
-        cameras[0], // Use the first camera (usually back)
-        ResolutionPreset.medium,
-        enableAudio: false,
-      );
+
+      // _cameraController = CameraController(
+      //   cameras[0], // Use the first camera (usually back)
+      //   ResolutionPreset.medium,
+      //   enableAudio: false,
+      // );
+
+      // Find the front camera
+      CameraDescription frontCamera;
+      try {
+        frontCamera = cameras.firstWhere(
+          (camera) => camera.lensDirection == CameraLensDirection.front
+        );
+      } catch (e) {
+        // If no front camera is found, default to the first camera
+        debugPrint("No front camera found, using first available camera.");
+        frontCamera = cameras[0];
+      }
+
+ _cameraController = CameraController(
+ frontCamera, // Use the selected front camera
+ ResolutionPreset.medium,
+ enableAudio: false,
+ );
 
       try {
         await _cameraController!.initialize();
@@ -93,44 +136,41 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
     }
   }
 
-  void _startImageStream() {
-    // _cameraController?.startImageStream((CameraImage image) async {
-    //   if (_channel == null || _channel!.sink.done || _isProcessingFrame) {
-    //     return; // Don't send if not connected or already processing
-    //   }
-
+void _startImageStream() {
     _cameraController?.startImageStream((CameraImage image) async {
       if (_channel == null || _isProcessingFrame) {
-        return; // Don't send if not connected or already processing
+        return;
       }
-
       _isProcessingFrame = true; // Set flag to true
 
       try {
-        // Convert CameraImage to JPEG bytes
-        // This is a simplified conversion. For optimal performance,
-        // you might need platform-specific image conversions or
-        // use packages like 'image' to convert YUV_420_888 to JPEG.
-        // For demonstration, we'll simulate a base64 encoded string.
-        // In a real scenario, you'd convert the raw image data (e.g., from image.planes)
-        // to a common format like JPEG and then base64 encode it.
+        // --- THIS IS THE KEY CHANGE ---
+        
+        // 1. Prepare data for the isolate.
+        // We MUST copy the bytes, as the original image buffer will be
+        // reused by the camera.
+        final Map<String, dynamic> isolateParams = {
+          'bytes': Uint8List.fromList(image.planes[0].bytes), // <-- IMPORTANT: Make a copy
+          'width': image.width,
+          'height': image.height,
+          'bytesPerRow': image.planes[0].bytesPerRow,
+        };
 
-        // THIS IS A SIMPLIFIED PLACEHOLDER:
-        // A real conversion from CameraImage (YUV420_888) to JPEG base64
-        // is complex and often requires native code or a robust image processing library.
-        // For quick testing with the Python backend, we'll assume `image.planes[0].bytes`
-        // could somehow represent a JPEG or be converted to one.
-        // For more robust conversion, consider: https://pub.dev/packages/image
-        // Or sending raw YUV data and processing on backend.
-        final String base64Image = base64Encode(image.planes[0].bytes); // This is a rough simulation!
+        // 2. Run the heavy encoding on a separate thread (isolate). 
+        // This 'await' waits for the background thread to finish.
+        final String jsonString = await compute(_processFrameOnIsolate, isolateParams);
 
-        _channel!.sink.add(base64Image); // Send the base64 encoded frame
+        // 3. Send the result (which is now just a string). This is very fast.
+        if (mounted) { // Check if the widget is still in the tree
+          _channel!.sink.add(jsonString);
+        }
+        // --- END OF KEY CHANGE ---
 
       } catch (e) {
         debugPrint("Error sending frame: $e");
       } finally {
-        // Allow sending next frame after a small delay to control rate
-        await Future.delayed(const Duration(milliseconds: 100)); // Adjust this delay
+        // We still need this delay to control the frame rate to the server
+        await Future.delayed(const Duration(milliseconds: 100)); // 10 FPS
         _isProcessingFrame = false; // Reset flag
       }
     });
