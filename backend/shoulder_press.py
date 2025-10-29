@@ -206,92 +206,133 @@ async def process_frame(img, state):
     # --- Unpack state variables ---
     rep_counter = state.get('rep_counter', 0)
     stage = state.get('stage', 'DOWN')
-    last_print_time = state.get('last_print_time', 0)
+    last_print_time = state.get('last_print_time', 0) # Keep this for debugging prints
     # Feedback/Error variables
-    current_error = None
+    errors = [] # List to hold the single highest priority error
     visual_feedback = "Good Form"
     perfect_rep = False
+    current_error = "" # Renamed from None for consistency
 
     try:
         # --- Image Processing ---
-        # Flip the image (phones often send mirrored front-camera video)
-        # img = cv.flip(img, 1)
-        # Convert to RGB for MediaPipe
         imgRGB = cv.cvtColor(img, cv.COLOR_BGR2RGB)
         
         # Run MediaPipe processing in a separate thread
         results = await asyncio.to_thread(pose.process, imgRGB)
         
-        if results.pose_landmarks:
-            landmarks = results.pose_landmarks.landmark
+        # --- NEW "CRASH-PROOF" BLOCK ---
+        try: 
+            if results.pose_landmarks:
+                landmarks = results.pose_landmarks.landmark
+                
+                # --- Get coordinates ---
+                rshoulder = [landmarks[mpPose.PoseLandmark.RIGHT_SHOULDER.value].x, landmarks[mpPose.PoseLandmark.RIGHT_SHOULDER.value].y]
+                relbow = [landmarks[mpPose.PoseLandmark.RIGHT_ELBOW.value].x, landmarks[mpPose.PoseLandmark.RIGHT_ELBOW.value].y]
+                rwrist = [landmarks[mpPose.PoseLandmark.RIGHT_WRIST.value].x, landmarks[mpPose.PoseLandmark.RIGHT_WRIST.value].y]
+                rhip = [landmarks[mpPose.PoseLandmark.RIGHT_HIP.value].x, landmarks[mpPose.PoseLandmark.RIGHT_HIP.value].y]
+                lshoulder = [landmarks[mpPose.PoseLandmark.LEFT_SHOULDER.value].x, landmarks[mpPose.PoseLandmark.LEFT_SHOULDER.value].y]
+                lelbow = [landmarks[mpPose.PoseLandmark.LEFT_ELBOW.value].x, landmarks[mpPose.PoseLandmark.LEFT_ELBOW.value].y]
+                lwrist = [landmarks[mpPose.PoseLandmark.LEFT_WRIST.value].x, landmarks[mpPose.PoseLandmark.LEFT_WRIST.value].y]
+                lhip = [landmarks[mpPose.PoseLandmark.LEFT_HIP.value].x, landmarks[mpPose.PoseLandmark.LEFT_HIP.value].y]
+
+                # --- Calculate angles ---
+                r_elbow_angle = calculate_angle(rshoulder, relbow, rwrist)
+                l_elbow_angle = calculate_angle(lshoulder, lelbow, lwrist)
+                r_shoulder_angle = calculate_angle(rhip, rshoulder, relbow)
+                l_shoulder_angle = calculate_angle(lhip, lshoulder, lelbow)
+                
+                # --- NEW, BETTER SHOULDER CALCULATION ---
+                shoulder_radians = np.arctan2(rshoulder[1] - lshoulder[1], rshoulder[0] - lshoulder[0])
+                shoulder_angle = np.abs(np.degrees(shoulder_radians))
+                
+                # A "level" line is near 0 or 180 degrees.
+                # A 10-degree tilt would be 10 or 170.
+                # Adjust the '10' here if needed (e.g., 15 for more tolerance)
+                is_shoulders_level = (shoulder_angle < 93) and (shoulder_angle > 87) 
+                # ----------------------------------------
+
+                # Debug print
+                current_time = time.time()
+                # Print only every 2 seconds to avoid flooding terminal
+                if (current_time - last_print_time) > 2.0: 
+                    #print(f"Elbow Angles (R/L): {r_elbow_angle:.0f}/{l_elbow_angle:.0f}  Shoulder Angles (R/L): {r_shoulder_angle:.0f}/{l_shoulder_angle:.0f}  Shoulder Tilt: {shoulder_angle:.2f}")
+                    print(f"shoulder angles: {r_shoulder_angle}, {l_shoulder_angle}")
+                    last_print_time = current_time # Update print time
+                
+                # --- Prioritized Error Checking (using elif) ---
+                # Priority 1: "Bring your elbows up" (Using a relaxed 60 degrees)
+                if r_shoulder_angle < 55 or l_shoulder_angle < 55:
+                    errors.append("Bring your elbows up")
+                
+                # Priority 2: "Tuck your elbows in" (Unchanged)
+                elif (r_elbow_angle > 110 and r_shoulder_angle < 115) or \
+                   (l_elbow_angle > 110 and l_shoulder_angle < 115):
+                    errors.append("Tuck your elbows in")
+
+                # Priority 3: "Keep shoulders level" (Using the new angle logic)
+                elif not is_shoulders_level:
+                    errors.append("Keep shoulders level")
+                
+                # Priority 4: "Elbows too close" (Unchanged)
+                elif r_elbow_angle < 45 or l_elbow_angle < 45:
+                    errors.append("Elbows too close to shoulders")
+                
+                # --- Rep Counter ---
+                if r_elbow_angle > 160 and l_elbow_angle > 160 and stage == 'DOWN':
+                    rep_counter += 1
+                    stage = 'UP'
+                    if not errors: # Rep is perfect only if no errors were found
+                        perfect_rep = True
+                elif r_elbow_angle < 90 and l_elbow_angle < 90:
+                    stage = 'DOWN'
+
+                # --- Select the single highest-priority error ---
+                if errors:
+                    current_error = errors[0] # Get the first (and only) error
+                    visual_feedback = current_error
+                    perfect_rep = False # An error invalidates a perfect rep
+                else:
+                    visual_feedback = "Good Form"
+                    # Only keep perfect_rep = True if it was set during the UP stage
+                    # Otherwise, reset it if form is good but not completing a rep
+                    if stage != 'UP': 
+                         perfect_rep = False
             
-            # --- Get coordinates (Unchanged) ---
-            rshoulder, relbow, rwrist, rhip = ([landmarks[mpPose.PoseLandmark.RIGHT_SHOULDER.value].x, landmarks[mpPose.PoseLandmark.RIGHT_SHOULDER.value].y], 
-                                                [landmarks[mpPose.PoseLandmark.RIGHT_ELBOW.value].x, landmarks[mpPose.PoseLandmark.RIGHT_ELBOW.value].y], 
-                                                [landmarks[mpPose.PoseLandmark.RIGHT_WRIST.value].x, landmarks[mpPose.PoseLandmark.RIGHT_WRIST.value].y], 
-                                                [landmarks[mpPose.PoseLandmark.RIGHT_HIP.value].x, landmarks[mpPose.PoseLandmark.RIGHT_HIP.value].y])
-            lshoulder, lelbow, lwrist, lhip = ([landmarks[mpPose.PoseLandmark.LEFT_SHOULDER.value].x, landmarks[mpPose.PoseLandmark.LEFT_SHOULDER.value].y], 
-                                                [landmarks[mpPose.PoseLandmark.LEFT_ELBOW.value].x, landmarks[mpPose.PoseLandmark.LEFT_ELBOW.value].y], 
-                                                [landmarks[mpPose.PoseLandmark.LEFT_WRIST.value].x, landmarks[mpPose.PoseLandmark.LEFT_WRIST.value].y], 
-                                                [landmarks[mpPose.PoseLandmark.LEFT_HIP.value].x, landmarks[mpPose.PoseLandmark.LEFT_HIP.value].y])
-
-            # --- Calculate angles (Unchanged) ---
-            r_elbow_angle = calculate_angle(rshoulder, relbow, rwrist)
-            l_elbow_angle = calculate_angle(lshoulder, lelbow, lwrist)
-            r_shoulder_angle = calculate_angle(rhip, rshoulder, relbow)
-            l_shoulder_angle = calculate_angle(lhip, lshoulder, lelbow)
-            shoulder_level_diff = abs(rshoulder[1] - lshoulder[1])
-
-            current_time = time.time()
-            if (current_time - last_print_time) > 2.0: # 2.0 seconds
-                print(f"Shoulder Diff: {shoulder_level_diff:.4f}")
-                last_print_time = current_time  # Update the time
-            # --- State Machine & Rep Counter Logic (Unchanged) ---
-            if r_elbow_angle > 160 and l_elbow_angle > 160 and stage == 'DOWN':
-                rep_counter += 1
-                stage = 'UP'
-                # We only set perfect_rep to True on the frame a rep is completed
-                perfect_rep = True 
-            elif r_elbow_angle < 90 and l_elbow_angle < 90:
-                stage = 'DOWN'
-            
-            # --- Error Detection Logic (Unchanged) ---
-            if shoulder_level_diff > 0.05:
-                current_error = "Keep shoulders level"
-            elif r_shoulder_angle < 70 or l_shoulder_angle < 70:
-                current_error = "Bring your elbows up"
-            elif (r_elbow_angle > 110 and r_shoulder_angle < 115) or \
-                 (l_elbow_angle > 110 and l_shoulder_angle < 115):
-                current_error = "Tuck your elbows in"
-            elif r_elbow_angle < 50 or l_elbow_angle < 50:
-                current_error = "Elbows too close to shoulders"
-
-            # --- Visual Feedback Logic (Slightly modified) ---
-            if current_error:
-                visual_feedback = current_error
-                perfect_rep = False # An error invalidates a perfect rep
             else:
-                visual_feedback = "Good Form"
+                # This happens if no person is detected at all
+                current_error = "Not tracking. Are you in frame?"
+                visual_feedback = "Not tracking"
+                perfect_rep = False
+
+        except Exception as e:
+            # --- THIS IS THE CATCH for landmark errors ---
+            print(f"Landmark error: {e}")
+            current_error = "Make sure you are fully in frame"
+            visual_feedback = "Make sure you are fully in frame"
+            perfect_rep = False
+        
+        # --- END OF "CRASH-PROOF" BLOCK ---
 
     except Exception as e:
-        print(f"Error during pose processing: {e}")
-        visual_feedback = "Tracking error. Reposition."
+        # Catch errors outside the landmark processing (e.g., cvtColor)
+        print(f"Outer processing error: {e}")
+        visual_feedback = "Tracking error"
+        current_error = "Tracking error"
+        perfect_rep = False
 
     # --- Prepare Response ---
-    # We map our Python variables to the JSON structure your Flutter app expects
     feedback_data = {
         "reps": rep_counter,
-        "error": current_error if current_error else "",
+        "error": current_error, # Send the single highest-priority error, or ""
         "adjustment": visual_feedback,
         "perfect_rep": perfect_rep
     }
 
     # --- Prepare Updated State ---
-    # This dictionary is passed back to the handler and saved
-    # for the *next* frame from this specific client
     updated_state = {
         'rep_counter': rep_counter,
-        'stage': stage
+        'stage': stage,
+        'last_print_time': last_print_time # Pass back the updated print time
     }
 
     return json.dumps(feedback_data), updated_state
