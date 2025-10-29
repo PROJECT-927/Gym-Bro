@@ -80,7 +80,7 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
 
   // --- IMPORTANT ---
   // Replace with your computer's local IP address and the port used by the Python server
-  final String _backendIpAddress = "10.61.76.179"; // E.g., "192.168.1.100"
+  final String _backendIpAddress = "10.208.20.95"; // E.g., "192.168.1.100"
   final int _backendPort = 8765;
   // ---------------
 
