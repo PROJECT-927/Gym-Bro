@@ -8,6 +8,11 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart'; // <-- 1. IMPORT TTS
+import 'dart:io';
+import 'package.pdf/pdf.dart';
+import 'package.pdf/widgets.dart' as pw;
+import 'package:path_provider/path_provider.dart';
+import 'package:open_file/open_file.dart';
 
 /// This function runs in a separate isolate (background thread)
 /// to avoid freezing the UI.
@@ -29,6 +34,18 @@ String _processFrameOnIsolate(Map<String, dynamic> params) {
 
   // 3. Return the final JSON string
   return jsonEncode(frameData);
+}
+
+class ErrorLog {
+  final String error;
+  final String timestamp;
+  final Uint8List? screenshot; // Nullable: only for the first occurrence
+
+  ErrorLog({
+    required this.error,
+    required this.timestamp,
+    this.screenshot,
+  });
 }
 // Placeholder for backend response structure
 class Feedback {
@@ -68,7 +85,9 @@ class ExerciseWorkoutScreen extends StatefulWidget {
 class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
   CameraController? _cameraController;
   WebSocketChannel? _channel;
-  FlutterTts flutterTts = FlutterTts(); // <-- 2. TTS Instance
+  FlutterTts flutterTts = FlutterTts();// <-- 2. TTS Instance
+  final List<ErrorLog> _sessionErrors = [];
+  final Set<String> _uniqueErrorsEncountered = {}; 
 
   Feedback _currentFeedback = Feedback(
     reps: 0,
@@ -114,6 +133,160 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
   // --- 6. Speak function ---
   Future<void> _speak(String text) async {
     await flutterTts.speak(text);
+  }
+  // Add these methods to _ExerciseWorkoutScreenState
+
+  Future<void> _takeScreenshotAndLog(String error) async {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+      _logError(error); // Fallback if camera isn't ready
+      return;
+    }
+
+    try {
+      // 1. Take the picture
+      final XFile imageFile = await _cameraController!.takePicture();
+      // 2. Read the image bytes
+      final Uint8List imageBytes = await imageFile.readAsBytes();
+
+      // 3. Log it with the screenshot
+      if (mounted) {
+        _sessionErrors.add(ErrorLog(
+          error: error,
+          timestamp: _currentFeedback.time,
+          screenshot: imageBytes,
+        ));
+      }
+    } catch (e) {
+      print("Failed to take picture: $e");
+      _logError(error); // Fallback to logging without screenshot
+    }
+  }
+
+  void _logError(String error) {
+    // Log the error without a screenshot
+    _sessionErrors.add(ErrorLog(
+      error: error,
+      timestamp: _currentFeedback.time,
+      screenshot: null,
+    ));
+  }
+
+  // Add this method to _ExerciseWorkoutScreenState
+  Future<void> _handleWorkoutEnd() async {
+    // 1. Stop all active processes
+    _cameraController?.stopImageStream();
+    _channel?.sink.close();
+    _workoutTimer?.cancel();
+    _errorTimer?.cancel();
+    flutterTts.stop();
+
+    // 2. Show a loading dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Dialog(
+        child: Padding(
+          padding: EdgeInsets.all(20),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(width: 20),
+              Text("Generating Report..."),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    try {
+      final pdf = pw.Document();
+
+      // 3. Create Title Page
+      pdf.addPage(pw.Page(
+        build: (pw.Context context) => pw.Center(
+          child: pw.Column(
+            mainAxisAlignment: pw.MainAxisAlignment.center,
+            children: [
+              pw.Text('Workout Report', style: pw.TextStyle(fontSize: 40, fontWeight: pw.FontWeight.bold)),
+              pw.SizedBox(height: 30),
+              pw.Text(widget.exerciseName.toUpperCase(), style: const pw.TextStyle(fontSize: 24)),
+              pw.SizedBox(height: 20),
+              pw.Text('Total Time: ${_currentFeedback.time}'),
+              pw.Text('Total Reps: ${_currentFeedback.reps}'),
+              pw.Text('Total Errors Logged: ${_sessionErrors.length}'),
+            ],
+          ),
+        ),
+      ));
+
+      // 4. Group errors to create one page per error type
+      final Map<String, List<ErrorLog>> groupedErrors = {};
+      for (final log in _sessionErrors) {
+        groupedErrors.putIfAbsent(log.error, () => []).add(log);
+      }
+
+      // 5. Create a page for each error
+      for (final entry in groupedErrors.entries) {
+        final String errorName = entry.key;
+        final List<ErrorLog> logs = entry.value;
+        final ErrorLog? firstLog = logs.firstWhere((log) => log.screenshot != null, orElse: () => logs.first);
+
+        pdf.addPage(pw.MultiPage(
+          pageFormat: PdfPageFormat.a4,
+          header: (context) => pw.Header(level: 1, text: 'Error Detail: $errorName'),
+          build: (pw.Context context) => [
+            pw.Text('Total Occurrences: ${logs.length}', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)),
+            pw.SizedBox(height: 20),
+            if (firstLog.screenshot != null) ...[
+              pw.Text('Screenshot on first occurrence (at ${firstLog.timestamp}):'),
+              pw.SizedBox(height: 10),
+              pw.Center(
+                child: pw.Image(
+                  pw.MemoryImage(firstLog.screenshot!),
+                  fit: pw.BoxFit.contain,
+                  height: 300,
+                ),
+              ),
+              pw.SizedBox(height: 20),
+            ],
+            pw.Text('All Timestamps for this Error:'),
+            pw.Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: logs.map((log) => pw.Text(log.timestamp)).toList(),
+            ),
+          ],
+        ));
+      }
+
+      // 6. Save the PDF
+      final Directory dir = await getApplicationDocumentsDirectory();
+      final String path = '${dir.path}/workout_report_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      final File file = File(path);
+      await file.writeAsBytes(await pdf.save());
+
+      // 7. Close loading dialog and show success
+      Navigator.of(context).pop(); // Close dialog
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Report saved to $path!')),
+      );
+
+      // 8. Open the saved PDF
+      await OpenFile.open(path);
+
+    } catch (e) {
+      // Handle error
+      Navigator.of(context).pop(); // Close dialog
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to generate PDF: $e')),
+      );
+    }
+
+    // 9. Finally, pop the workout screen
+    if (mounted) {
+      Navigator.of(context).pop();
+    }
   }
 
 
@@ -237,6 +410,16 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
                     if (_stableError != _lastSpokenError) {
                       _speak(_stableError);
                       _lastSpokenError = _stableError; // Remember what we just spoke
+                    }
+                    if (_stableError.isNotEmpty) {
+                      if (!_uniqueErrorsEncountered.contains(_stableError)) {
+                        // First time seeing this error in the session
+                        _uniqueErrorsEncountered.add(_stableError);
+                        _takeScreenshotAndLog(_stableError); // New function (see below)
+                      } else {
+                        // Subsequent occurrence, just log it
+                        _logError(_stableError); // New function (see below)
+                      }
                     }
                   }
                 });
@@ -419,6 +602,7 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
                     Center(
                       child: ElevatedButton(
                         onPressed: () {
+                           _handleWorkoutEnd();
                            Navigator.of(context).pop(); // Just pop now
                            ScaffoldMessenger.of(context).showSnackBar(
                              const SnackBar(content: Text('Workout ended!')),
