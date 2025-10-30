@@ -37,7 +37,7 @@ while True:
     if not success: break
     
     img = cv.flip(img, 1)
-    imgRGB = cv.cvtColor(img, cv.COLOR_BGR_RGB)
+    imgRGB = cv.cvtColor(img, cv.COLOR_BGR2RGB)
     results = pose.process(imgRGB)
     
     elapsed_time = 0
