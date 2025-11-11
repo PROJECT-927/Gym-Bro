@@ -116,7 +116,7 @@ while True:
 
                 # Ready position
                 if knee_angle > 150:
-                    feedback = "🏋️ Ready position — Start squats"
+                    feedback = "🏋 Ready position — Start squats"
                     color = (200, 200, 200)
                     if not ready:
                         ready = True
