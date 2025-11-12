@@ -22,7 +22,8 @@ class _ExerciseMenuScreenState extends State<ExerciseMenuScreen> {
     Exercise(name: 'SHOULDER PRESS', imagePath: 'assets/shoulder_press.jpg'),
     Exercise(name: 'BARBELL CURLS', imagePath: 'assets/barbell_curls.webp'),
     Exercise(name: 'PLANK', imagePath: 'assets/shoulder_press.jpg'),
-    Exercise(name: 'squats', imagePath: 'assets/squats.jpg'),
+    Exercise(name: 'SQUATS', imagePath: 'assets/squats.jpg'),
+    Exercise(name: 'PUSHUPS', imagePath: 'assets/squats.jpg'),
   ];
 
   String? _selectedExercise; // To track the currently selected exercise

@@ -1,0 +1,12 @@
+# Test coverage and reports
+coverage/
+lcov.info
+.coverage
+.test-results/
+
+# Test cache
+.dart_tool/
+
+# OS files
+.DS_Store
+Thumbs.db

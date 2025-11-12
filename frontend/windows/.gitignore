@@ -1,4 +1,12 @@
 flutter/ephemeral/
+flutter/ephemeral**
+
+# Generated files
+runner/generated_plugin_registrant.cc
+runner/generated_plugin_registrant.h
+flutter/generated_plugins.cmake
+flutter/generated_plugin_registrant.cc
+flutter/generated_plugin_registrant.h
 
 # Visual Studio user-specific files.
 *.suo
@@ -9,9 +17,32 @@ flutter/ephemeral/
 # Visual Studio build-related files.
 x64/
 x86/
+ARM64/
 
 # Visual Studio cache files
 # files ending in .cache can be ignored
 *.[Cc]ache
 # but keep track of directories ending in .cache
 !*.[Cc]ache/
+
+# Build output
+build/
+cmake-build-*/
+*.obj
+*.exe
+*.pdb
+*.lib
+*.dll
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CMake
+CMakeUserPresets.json
+CMakeCache.txt

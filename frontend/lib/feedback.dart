@@ -90,7 +90,7 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
 
   // --- IMPORTANT ---
   // Replace with your computer's local IP address and the port used by the Python server
-  final String _backendIpAddress = "10.81.135.95"; // E.g., "192.168.1.100"
+  final String _backendIpAddress = "10.177.128.95"; // E.g., "192.168.1.100"
   final int _backendPort = 8765;
   // ---------------
 
@@ -195,7 +195,9 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
       _channel = IOWebSocketChannel.connect(uri);
       debugPrint("Attempting to connect to WebSocket: $uri");
 
-      // --- 7. UPDATED 2-SECOND "WAIT" LOGIC FOR TTS ---
+      _channel!.sink.add(jsonEncode({'exercise': widget.exerciseName}));
+
+      // --- 7. UPDATED 1-SECOND "WAIT" LOGIC FOR TTS ---
       _channel!.stream.listen(
         (message) {
           if (mounted) {
@@ -225,12 +227,12 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
                 setState(() { _stableError = ""; });
                 _lastSpokenError = ""; // Ready to speak next error
               } else {
-                // New potential error. Start the 2-second timer.
-                _errorTimer = Timer(const Duration(seconds: 2), () {
+                // New potential error. Start the 1-second timer.
+                _errorTimer = Timer(const Duration(seconds: 1), () {
                   // --- TIMER FIRED! ---
                   // Check if the error is *still* the one we were tracking.
                   if (mounted && _potentialError == newError) {
-                    // Yes, persisted for 2s. Make it stable.
+                    // Yes, persisted for 1s. Make it stable.
                     setState(() { _stableError = newError; });
 
                     // Speak it, ONLY if it's different from the last *stable* error spoken.

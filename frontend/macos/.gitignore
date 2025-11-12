@@ -1,7 +1,33 @@
 # Flutter-related
 **/Flutter/ephemeral/
 **/Pods/
+Flutter/Flutter.podspec
 
 # Xcode-related
+**/DerivedData/
 **/dgph
 **/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.swiftpm/xcode.make
+
+# Build
+build/
+cmake-build-*/
+*.o
+*.a
+
+# Generated files
+Runner/GeneratedPluginRegistrant.*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CMake
+CMakeUserPresets.json
