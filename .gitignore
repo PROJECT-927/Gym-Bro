@@ -1,0 +1,56 @@
+# Dart
+.dart_tool/
+.packages
+.pub-cache/
+build/
+
+# Flutter
+.flutter-plugins
+.flutter-plugins-dependencies
+flutter_export_environment.sh
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+
+# Android
+/android/captures/
+/android/local.properties
+/android/.gradle/
+/android/app/build/
+/android/app/src/main/assets/flutter_assets/
+
+# iOS
+/ios/Pods/
+/ios/Flutter/App.framework
+/ios/Flutter/engine.podspec
+/ios/Flutter/Flutter.podspec
+/ios/Flutter/Generated.xcconfig
+/ios/.symlinks/
+/ios/Runner/GeneratedPluginRegistrant.h
+/ios/Runner/GeneratedPluginRegistrant.m
+/ios/Runner/Pods-Runner.frameworks.sh
+/ios/Runner/production.xcconfig
+/ios/Runner/Release.xcconfig
+/ios/Runner/Debug.xcconfig
+
+# macOS
+/macos/Flutter/Generated/
+/macos/Flutter/ephemeral/
+/macos/Pods/
+/macos/.symlinks/
+/macos/Flutter/GeneratedPluginRegistrant.swift
+
+# Linux
+/linux/flutter/generated_plugins.cmake
+/linux/flutter/ephemeral
+
+# Windows
+/windows/flutter/generated_plugins.cmake
+/windows/flutter/ephemeral
+
+# User-specific
+*.log
+__pycache__/
+.shift/
