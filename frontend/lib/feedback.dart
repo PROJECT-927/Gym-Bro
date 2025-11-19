@@ -15,21 +15,73 @@ import 'package:open_file/open_file.dart';
 
 /// This function runs in a separate isolate (background thread)
 /// to avoid freezing the UI.
+/// REPLACE YOUR EXISTING _processFrameOnIsolate WITH THIS
 String _processFrameOnIsolate(Map<String, dynamic> params) {
-  final Uint8List bytes = params['bytes'];
-  final int width = params['width'];
-  final int height = params['height'];
-  final int bytesPerRow = params['bytesPerRow'];
+  try {
+    final int width = params['width'];
+    final int height = params['height'];
+    final List<dynamic> planes = params['planes'];
+    final String format = params['format'];
 
-  final String base64Image = base64Encode(bytes);
-  final Map<String, dynamic> frameData = {
-    'frame': base64Image,
-    'width': width,
-    'height': height,
-    'bytesPerRow': bytesPerRow,
-  };
+    img.Image? image;
 
-  return jsonEncode(frameData);
+    // 1. Convert YUV420 to RGB (Same logic as your PDF generator)
+    if (format == 'ImageFormatGroup.yuv420') {
+      final yPlane = planes[0]['bytes'] as Uint8List;
+      final uPlane = planes[1]['bytes'] as Uint8List;
+      final vPlane = planes[2]['bytes'] as Uint8List;
+      final uvRowStride = planes[1]['bytesPerRow'] as int;
+      final uvPixelStride = 2;
+
+      image = img.Image(width: width, height: height);
+
+      for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+          final int uvIndex = (uvPixelStride * (x / 2).floor()) + (uvRowStride * (y / 2).floor());
+          final int index = y * width + x;
+
+          // Bounds check to prevent tearing/crashes
+          if (index >= yPlane.length || uvIndex >= uPlane.length || uvIndex >= vPlane.length) continue;
+
+          final yp = yPlane[index];
+          final up = uPlane[uvIndex];
+          final vp = vPlane[uvIndex];
+
+          int r = (yp + 1.402 * (vp - 128)).round();
+          int g = (yp - 0.344136 * (up - 128) - 0.714136 * (vp - 128)).round();
+          int b = (yp + 1.772 * (up - 128)).round();
+
+          image.setPixelRgba(x, y, r.clamp(0, 255), g.clamp(0, 255), b.clamp(0, 255), 255);
+        }
+      }
+    } else if (format == 'ImageFormatGroup.bgra8888') {
+      final plane = planes[0]['bytes'] as Uint8List;
+      image = img.Image.fromBytes(width: width, height: height, bytes: plane.buffer, order: img.ChannelOrder.bgra);
+    }
+
+    if (image == null) return "";
+
+    // 2. CRITICAL: Resize for AI (MediaPipe is faster with small images)
+    // We keep aspect ratio but limit width to 480px.
+    // This makes the data HUGEly smaller but keeps AI accurate.
+    final img.Image smallImage = img.copyResize(image, width: 480);
+
+    // 3. Encode to JPEG with reduced quality (Human eye won't notice on video stream)
+    final List<int> jpeg = img.encodeJpg(smallImage, quality: 60);
+    final String base64Image = base64Encode(jpeg);
+
+    // 4. Send the JSON
+    final Map<String, dynamic> frameData = {
+      'frame': base64Image,
+      // Note: We send the NEW dimensions so Python knows it's resized
+      'width': smallImage.width,
+      'height': smallImage.height,
+    };
+
+    return jsonEncode(frameData);
+  } catch (e) {
+    return "";
+  }
 }
 
 // RENAMED to WorkoutFeedback to avoid conflict with Flutter's material Feedback class
@@ -55,6 +107,33 @@ class WorkoutFeedback {
       error: json['error'] ?? '',
       adjustment: json['adjustment'] ?? '',
       perfectRep: json['perfect_rep'] ?? false,
+    );
+  }
+
+  // Extensions to help copy WorkoutFeedback objects with new values
+  WorkoutFeedback copyWith({
+    int? reps,
+    String? time,
+    String? error,
+    String? adjustment,
+    bool? perfectRep,
+  }) {
+    return WorkoutFeedback(
+      reps: reps ?? this.reps,
+      time: time ?? this.time,
+      error: error ?? this.error,
+      adjustment: adjustment ?? this.adjustment,
+      perfectRep: perfectRep ?? this.perfectRep,
+    );
+  }
+
+  WorkoutFeedback copyWithTime(String newTime) {
+    return WorkoutFeedback(
+      reps: reps,
+      time: newTime,
+      error: error,
+      adjustment: adjustment,
+      perfectRep: perfectRep,
     );
   }
 }
@@ -109,7 +188,7 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
   bool _isWorkoutEnding = false; // Flag to prevent "Connection Lost" message
 
   // IMPORTANT: Replace with your computer's local IP address.
-  final String _backendIpAddress = "172.16.0.4";
+  final String _backendIpAddress = "100.100.121.79"; // <-- DOUBLE CHECK THIS
   final int _backendPort = 8765;
 
   @override
@@ -121,6 +200,17 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
     _initializeTts();
   }
 
+  @override
+  void dispose() {
+    _cameraController?.stopImageStream();
+    _cameraController?.dispose();
+    _channel?.sink.close();
+    _workoutTimer?.cancel();
+    _errorTimer?.cancel();
+    flutterTts.stop();
+    super.dispose();
+  }
+
   Future<void> _initializeTts() async {
     await flutterTts.setLanguage("en-US");
     await flutterTts.setSpeechRate(0.5);
@@ -129,7 +219,9 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
   }
 
   Future<void> _speak(String text) async {
-    await flutterTts.speak(text);
+    if (text.isNotEmpty) {
+      await flutterTts.speak(text);
+    }
   }
 
   Future<void> _initializeCamera() async {
@@ -147,7 +239,7 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
 
       _cameraController = CameraController(
         frontCamera,
-        ResolutionPreset.high,
+        ResolutionPreset.high, // Use higher resolution for better quality
         enableAudio: false,
         imageFormatGroup: Platform.isAndroid
             ? ImageFormatGroup.yuv420
@@ -158,8 +250,8 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
         await _cameraController!.initialize();
         if (mounted) {
           setState(() {});
+          _startImageStream();
         }
-        _startImageStream();
       } on CameraException catch (e) {
         debugPrint("Camera Error: $e");
       }
@@ -168,41 +260,39 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
     }
   }
 
+  // REPLACE YOUR EXISTING _startImageStream WITH THIS
   void _startImageStream() {
-    _cameraController?.startImageStream((CameraImage image) async {
-      // Capture latest frame for screenshot purposes
-      _currentCameraImage = image;
+    _cameraController?.startImageStream((CameraImage image) {
+      _currentCameraImage = image; // Keep full res for PDF
 
       if (_channel == null || _isProcessingFrame) {
         return;
       }
       _isProcessingFrame = true;
 
-      try {
-        // Only process if we have valid planes (usually 3 for YUV)
-        if (image.planes.isNotEmpty) {
-          final Map<String, dynamic> isolateParams = {
-            'bytes': Uint8List.fromList(image.planes[0].bytes),
-            'width': image.width,
-            'height': image.height,
-            'bytesPerRow': image.planes[0].bytesPerRow,
-          };
+      // Prepare params (Pass ALL planes for proper color conversion)
+      final imageParams = {
+        'width': image.width,
+        'height': image.height,
+        'format': image.format.group.toString(),
+        'planes': image.planes.map((p) => {
+          'bytes': p.bytes,
+          'bytesPerRow': p.bytesPerRow,
+        }).toList(),
+      };
 
-          final String jsonString = await compute(
-            _processFrameOnIsolate,
-            isolateParams,
-          );
-
-          if (mounted && _channel != null) {
-            _channel!.sink.add(jsonString);
-          }
+      compute(_processFrameOnIsolate, imageParams).then((jsonString) {
+        if (mounted && _channel != null && jsonString.isNotEmpty) {
+          _channel!.sink.add(jsonString);
         }
-      } catch (e) {
-        debugPrint("Error sending frame: $e");
-      } finally {
-        await Future.delayed(const Duration(milliseconds: 100));
+        // Small delay to prevent flooding the network
+        Future.delayed(const Duration(milliseconds: 50), () {
+          _isProcessingFrame = false;
+        });
+      }).catchError((e) {
+        debugPrint("Error in frame processing isolate: $e");
         _isProcessingFrame = false;
-      }
+      });
     });
   }
 
@@ -212,29 +302,22 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
       _channel = IOWebSocketChannel.connect(uri);
       debugPrint("Attempting to connect to WebSocket: $uri");
       _channel!.sink.add(jsonEncode({'exercise': widget.exerciseName}));
+
       _channel!.stream.listen(
             (message) {
           if (mounted) {
             try {
               final Map<String, dynamic> data = jsonDecode(message);
-              final WorkoutFeedback newFeedback = WorkoutFeedback.fromJson(
-                data,
-              ).copyWithTime(_currentFeedback.time);
+              final WorkoutFeedback newFeedback = WorkoutFeedback.fromJson(data)
+                  .copyWithTime(_currentFeedback.time);
 
               final String newError = newFeedback.error;
-              final String currentTime = newFeedback.time;
+              final String currentTime = _currentFeedback.time;
 
-              // Error logging logic
               if (newError.isNotEmpty && _currentCameraImage != null) {
                 if (!_errorReports.containsKey(newError)) {
-                  // First time seeing this error. Take snapshot.
-                  _captureErrorScreenshot(
-                    newError,
-                    currentTime,
-                    _currentCameraImage!,
-                  );
+                  _captureErrorScreenshot(newError, currentTime, _currentCameraImage!);
                 } else {
-                  // Subsequent time. Just add timestamp if it's different.
                   final lastTime = _errorReports[newError]!.timestamps.last;
                   if (currentTime != lastTime) {
                     setState(() {
@@ -272,30 +355,27 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
                 }
               }
             } catch (e) {
-              debugPrint("Error processing WS message: $e");
+              debugPrint("Error processing WebSocket message: $e");
             }
           }
         },
         onDone: () {
           debugPrint('WebSocket connection closed!');
           _errorTimer?.cancel();
-          if (_isWorkoutEnding) return;
-          if (mounted) {
-            setState(() {
-              _stableError = 'CONNECTION LOST';
-            });
-            _speak("Connection Lost");
-          }
+          if (_isWorkoutEnding || !mounted) return;
+          setState(() {
+            _stableError = 'CONNECTION LOST';
+          });
+          _speak("Connection Lost");
         },
         onError: (error) {
           debugPrint('WebSocket error: $error');
           _errorTimer?.cancel();
-          if (mounted) {
-            setState(() {
-              _stableError = 'CONNECTION ERROR';
-            });
-            _speak("Connection Error");
-          }
+          if (!mounted) return;
+          setState(() {
+            _stableError = 'CONNECTION ERROR';
+          });
+          _speak("Connection Error");
         },
       );
     } catch (e) {
@@ -308,27 +388,25 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
     }
   }
 
-  // Helper to capture and convert screenshot
   void _captureErrorScreenshot(
       String error,
       String time,
       CameraImage cameraImage,
-      ) async {
-    try {
-      // FIX: Extract raw data here. We CANNOT pass CameraImage to compute/isolate.
-      // It holds a pointer to native memory which isn't shared across threads.
-      final Map<String, dynamic> imageParams = {
-        'width': cameraImage.width,
-        'height': cameraImage.height,
-        'planes': cameraImage.planes.map((p) => {
-          'bytes': p.bytes,
-          'bytesPerRow': p.bytesPerRow,
-          'bytesPerPixel': p.bytesPerPixel,
-        }).toList(),
-      };
+      ) {
+    // We CANNOT pass CameraImage to compute/isolate.
+    // It holds a pointer to native memory which isn't shared across threads.
+    // So we extract the raw data into a Map.
+    final imageParams = {
+      'width': cameraImage.width,
+      'height': cameraImage.height,
+      'planes': cameraImage.planes.map((p) => {
+        'bytes': p.bytes,
+        'bytesPerRow': p.bytesPerRow,
+      }).toList(),
+      'format': cameraImage.format.group.toString(), // Pass format info
+    };
 
-      final Uint8List? pngBytes = await compute(_convertYUVtoPNG, imageParams);
-
+    compute(_convertCameraImageToPng, imageParams).then((pngBytes) {
       if (pngBytes != null && mounted) {
         setState(() {
           _errorReports[error] = ErrorReport(
@@ -341,79 +419,9 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
       } else {
         debugPrint("Failed to convert image for error: $error");
       }
-    } catch (e) {
+    }).catchError((e) {
       debugPrint("Error capturing screenshot: $e");
-    }
-  }
-
-  // Helper function to convert CameraImage planes to PNG
-  // Updated to accept Map instead of CameraImage for Isolate compatibility
-  static Uint8List? _convertYUVtoPNG(Map<String, dynamic> imageData) {
-    try {
-      final int width = imageData['width'];
-      final int height = imageData['height'];
-      final List<dynamic> planes = imageData['planes'];
-
-      // Basic validation for YUV420 (3 planes)
-      if (planes.length < 3) return null;
-
-      final int uvRowStride = planes[1]['bytesPerRow'];
-      final int? uvPixelStride = planes[1]['bytesPerPixel'];
-
-      final Uint8List yPlane = planes[0]['bytes'];
-      final Uint8List uPlane = planes[1]['bytes'];
-      final Uint8List vPlane = planes[2]['bytes'];
-
-      var convertedImage = img.Image(width: width, height: height);
-
-      // Safety check for stride
-      final int pixelStride = uvPixelStride ?? 1;
-
-      for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-          final int uvIndex =
-              pixelStride * (x / 2).floor() + uvRowStride * (y / 2).floor();
-          final int index = y * width + x;
-
-          // Boundary checks
-          if (index >= yPlane.length || uvIndex >= uPlane.length || uvIndex >= vPlane.length) {
-            continue;
-          }
-
-          final yp = yPlane[index];
-          final up = uPlane[uvIndex];
-          final vp = vPlane[uvIndex];
-
-          int r = (yp + 1.402 * (vp - 128)).round();
-          int g = (yp - 0.344136 * (up - 128) - 0.714136 * (vp - 128)).round();
-          int b = (yp + 1.772 * (up - 128)).round();
-
-          convertedImage.setPixelRgba(
-            x,
-            y,
-            r.clamp(0, 255),
-            g.clamp(0, 255),
-            b.clamp(0, 255),
-            255,
-          );
-        }
-      }
-
-      // Rotate 270 degrees for front camera and resize
-      final img.Image rotatedImage = img.copyRotate(convertedImage, angle: 270);
-
-      // Resize to a reasonable dimension
-      final img.Image resizedImage = img.copyResize(
-        rotatedImage,
-        width: 600,
-        interpolation: img.Interpolation.linear,
-      );
-
-      return Uint8List.fromList(img.encodePng(resizedImage));
-    } catch (e) {
-      debugPrint("Error converting image in isolate: $e");
-      return null;
-    }
+    });
   }
 
   void _startWorkoutTimer() {
@@ -424,173 +432,30 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
           int minutes = _timeInSeconds ~/ 60;
           int seconds = _timeInSeconds % 60;
           _currentFeedback = _currentFeedback.copyWith(
-            time: '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}',
+            time:
+            '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}',
           );
         });
       }
     });
   }
 
-  // PDF generation logic (unchanged but verified)
-  static Future<String?> _generatePdfInBackground(
-      Map<String, dynamic> params,
-      ) async {
-    try {
-      final String exerciseName = params['exerciseName'];
-      final int reps = params['reps'];
-      final String time = params['time'];
-      final String savePath = params['savePath'];
-      final List<Map<String, dynamic>> errorReportsData =
-      params['errorReports'];
-
-      final pdf = pw.Document();
-      final String dateTime = DateTime.now().toLocal().toString().split('.')[0];
-
-      // Title Page
-      pdf.addPage(
-        pw.Page(
-          build: (pw.Context context) {
-            return pw.Center(
-              child: pw.Column(
-                mainAxisAlignment: pw.MainAxisAlignment.center,
-                children: [
-                  pw.Text(
-                    'Workout Report',
-                    style: pw.TextStyle(
-                      fontSize: 40,
-                      fontWeight: pw.FontWeight.bold,
-                    ),
-                  ),
-                  pw.SizedBox(height: 20),
-                  pw.Text(
-                    exerciseName.toUpperCase(),
-                    style: const pw.TextStyle(fontSize: 24),
-                  ),
-                  pw.SizedBox(height: 10),
-                  pw.Text(dateTime, style: const pw.TextStyle(fontSize: 18)),
-                  pw.SizedBox(height: 30),
-                  pw.Text(
-                    'Total Reps: $reps',
-                    style: const pw.TextStyle(fontSize: 20),
-                  ),
-                  pw.Text(
-                    'Total Time: $time',
-                    style: const pw.TextStyle(fontSize: 20),
-                  ),
-                  pw.SizedBox(height: 50),
-                  pw.Text(
-                    errorReportsData.isEmpty
-                        ? 'No errors detected. Great job!'
-                        : 'Found ${errorReportsData.length} unique error(s).',
-                    style: pw.TextStyle(
-                      fontSize: 18,
-                      color: errorReportsData.isEmpty
-                          ? PdfColors.green
-                          : PdfColors.red,
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        ),
-      );
-
-      // Error Pages
-      for (final reportData in errorReportsData) {
-        final String error = reportData['error'];
-        final Uint8List imageBytes = reportData['imageBytes'];
-        final List<String> timestamps = List<String>.from(
-          reportData['timestamps'],
-        );
-
-        final pdfImage = pw.MemoryImage(imageBytes);
-
-        pdf.addPage(
-          pw.Page(
-            build: (pw.Context context) {
-              return pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
-                children: [
-                  pw.Text(
-                    'ERROR: $error',
-                    style: pw.TextStyle(
-                      fontSize: 24,
-                      fontWeight: pw.FontWeight.bold,
-                      color: PdfColors.red,
-                    ),
-                  ),
-                  pw.SizedBox(height: 20),
-                  pw.Center(
-                    child: pw.Container(
-                      constraints: const pw.BoxConstraints(
-                        maxHeight: 350,
-                        maxWidth: 400,
-                      ),
-                      child: pw.Image(pdfImage, fit: pw.BoxFit.contain),
-                    ),
-                  ),
-                  pw.SizedBox(height: 20),
-                  pw.Text(
-                    'Occurred at:',
-                    style: pw.TextStyle(
-                      fontSize: 18,
-                      fontWeight: pw.FontWeight.bold,
-                    ),
-                  ),
-                  pw.SizedBox(height: 10),
-                  pw.Wrap(
-                    spacing: 8.0,
-                    runSpacing: 4.0,
-                    children: timestamps.map((time) {
-                      return pw.Container(
-                        padding: const pw.EdgeInsets.all(5),
-                        decoration: pw.BoxDecoration(
-                          color: PdfColors.grey200,
-                          borderRadius: pw.BorderRadius.circular(5),
-                        ),
-                        child: pw.Text(time),
-                      );
-                    }).toList(),
-                  ),
-                ],
-              );
-            },
-          ),
-        );
-      }
-
-      final File file = File(savePath);
-      await file.writeAsBytes(await pdf.save());
-
-      return savePath;
-    } catch (e) {
-      debugPrint('Error generating PDF in background: $e');
-      return null;
-    }
-  }
-
   Future<String?> _generateAndSavePdf() async {
     try {
-      debugPrint("Starting PDF generation...");
       final Directory appDocDir = await getApplicationDocumentsDirectory();
       final String fileName =
           'Workout_Report_${widget.exerciseName.replaceAll(' ', '_')}_${DateTime.now().millisecondsSinceEpoch}.pdf';
       final String savePath = '${appDocDir.path}/$fileName';
 
-      debugPrint("Final save path: $savePath");
-
       final List<Map<String, dynamic>> errorReportsData = _errorReports.values
-          .map((report) {
-        return {
-          'error': report.error,
-          'imageBytes': report.firstImage,
-          'timestamps': report.timestamps,
-        };
+          .map((report) => {
+        'error': report.error,
+        'imageBytes': report.firstImage,
+        'timestamps': report.timestamps,
       })
           .toList();
 
-      final Map<String, dynamic> params = {
+      final params = {
         'exerciseName': widget.exerciseName,
         'reps': _currentFeedback.reps,
         'time': _currentFeedback.time,
@@ -598,11 +463,8 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
         'errorReports': errorReportsData,
       };
 
-      final String? resultPath = await compute(
-        _generatePdfInBackground,
-        params,
-      );
-
+      // Generate PDF in a background isolate
+      final String? resultPath = await compute(_generatePdfInBackground, params);
       return resultPath;
     } catch (e, stackTrace) {
       debugPrint('Error in _generateAndSavePdf: $e');
@@ -619,6 +481,7 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
       _isSavingReport = true;
     });
 
+    // Stop all activities
     await _cameraController?.stopImageStream();
     _channel?.sink.close();
     _workoutTimer?.cancel();
@@ -629,103 +492,78 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (BuildContext context) {
-          return PopScope(
-            canPop: false,
-            child: AlertDialog(
-              backgroundColor: const Color(0xFF1C1C1E),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: const [
-                  CircularProgressIndicator(color: Color(0xFF00C6FF)),
-                  SizedBox(height: 20),
-                  Text(
-                    'Generating workout report...\nPlease wait',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white),
-                  ),
-                ],
-              ),
+        builder: (BuildContext context) => PopScope(
+          canPop: false,
+          child: AlertDialog(
+            backgroundColor: const Color(0xFF1C1C1E),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                CircularProgressIndicator(color: Color(0xFF00C6FF)),
+                SizedBox(height: 20),
+                Text(
+                  'Generating workout report...\nPlease wait',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white),
+                ),
+              ],
             ),
-          );
-        },
+          ),
+        ),
       );
     }
 
     final String? pdfPath = await _generateAndSavePdf();
 
     if (mounted) {
-      Navigator.of(context, rootNavigator: true).pop();
+      Navigator.of(context, rootNavigator: true).pop(); // Close loading dialog
     }
 
     if (!mounted) return;
 
-    if (pdfPath != null) {
-      showDialog(
-        context: context,
-        builder: (BuildContext dialogContext) {
-          return AlertDialog(
-            backgroundColor: const Color(0xFF1C1C1E),
-            title: const Text('Success!', style: TextStyle(color: Colors.green)),
-            content: const Text(
-              'Report saved successfully!\n\nTap OPEN to view.',
-              style: TextStyle(color: Colors.white),
-            ),
-            actions: [
+    // Show final result dialog
+    showDialog(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1C1C1E),
+          title: Text(pdfPath != null ? 'Success!' : 'Error',
+              style:
+              TextStyle(color: pdfPath != null ? Colors.green : Colors.red)),
+          content: Text(
+            pdfPath != null
+                ? 'Report saved successfully!\n\nTap OPEN to view.'
+                : 'Failed to save report. Please try again.',
+            style: const TextStyle(color: Colors.white),
+          ),
+          actions: [
+            if (pdfPath != null)
               TextButton(
                 onPressed: () {
                   Navigator.of(dialogContext).pop();
                   Navigator.of(context).popUntil((route) => route.isFirst);
                   OpenFile.open(pdfPath);
                 },
-                child: const Text('OPEN', style: TextStyle(color: Color(0xFF00C6FF))),
+                child: const Text('OPEN',
+                    style: TextStyle(color: Color(0xFF00C6FF))),
               ),
-              TextButton(
-                onPressed: () {
-                  Navigator.of(dialogContext).pop();
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                if (pdfPath != null) {
                   Navigator.of(context).popUntil((route) => route.isFirst);
-                },
-                child: const Text('CLOSE', style: TextStyle(color: Colors.white70)),
-              ),
-            ],
-          );
-        },
-      );
-    } else {
-      showDialog(
-        context: context,
-        builder: (BuildContext dialogContext) {
-          return AlertDialog(
-            backgroundColor: const Color(0xFF1C1C1E),
-            title: const Text('Error', style: TextStyle(color: Colors.red)),
-            content: const Text(
-              'Failed to save report. Please try again.',
-              style: TextStyle(color: Colors.white),
+                }
+              },
+              child: Text(pdfPath != null ? 'CLOSE' : 'OK',
+                  style: TextStyle(
+                      color: pdfPath != null
+                          ? Colors.white70
+                          : const Color(0xFF00C6FF))),
             ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  Navigator.of(dialogContext).pop();
-                  Navigator.of(context).popUntil((route) => route.isFirst);
-                },
-                child: const Text('OK', style: TextStyle(color: Color(0xFF00C6FF))),
-              ),
-            ],
-          );
-        },
-      );
-    }
-  }
-
-  @override
-  void dispose() {
-    _cameraController?.stopImageStream();
-    _cameraController?.dispose();
-    _channel?.sink.close();
-    _workoutTimer?.cancel();
-    _errorTimer?.cancel();
-    flutterTts.stop();
-    super.dispose();
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -740,7 +578,9 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
 
     final double screenHeight = MediaQuery.of(context).size.height;
     final double cameraHeight = screenHeight * 0.75;
-    final Size cameraPreviewSize = _cameraController!.value.previewSize!;
+    // Ensure preview size is not null before using it
+    final Size cameraPreviewSize = _cameraController!.value.previewSize ?? const Size(1,1);
+
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -771,7 +611,6 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
         ),
         child: Column(
           children: [
-            // Camera Preview
             SizedBox(
               height: cameraHeight,
               width: double.infinity,
@@ -780,7 +619,6 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
                 child: CameraPreview(_cameraController!),
               ),
             ),
-            // Feedback Section
             Expanded(
               child: Container(
                 width: double.infinity,
@@ -788,116 +626,31 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
                   color: Color(0xFF1C1C1E),
                   borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
                 ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 15,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Reps and Time Row
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'REPS:',
-                              style: TextStyle(
-                                color: Colors.white70,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            Text(
-                              _currentFeedback.reps.toString().padLeft(2, '0'),
-                              style: const TextStyle(
-                                color: Color(0xFF00C6FF),
-                                fontSize: 32,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            const Text(
-                              'TIME:',
-                              style: TextStyle(
-                                color: Colors.white70,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            Text(
-                              _currentFeedback.time,
-                              style: const TextStyle(
-                                color: Color(0xFF00C6FF),
-                                fontSize: 32,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
+                        _buildInfoColumn('REPS', _currentFeedback.reps.toString().padLeft(2, '0')),
+                        _buildInfoColumn('TIME', _currentFeedback.time, crossAxisAlignment: CrossAxisAlignment.end),
                       ],
                     ),
                     const SizedBox(height: 10),
-
-                    // Scrollable Feedback Area
                     Expanded(
                       child: SingleChildScrollView(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if (_stableError.isNotEmpty &&
-                                !_currentFeedback.perfectRep) ...[
-                              FeedbackChip(
-                                label: 'ERROR: $_stableError',
-                                color: Colors.red.shade700,
-                              ),
-                              const SizedBox(height: 8),
-                              FeedbackChip(
-                                label: 'ADJUST: $_stableError',
-                                color: Colors.amber.shade700,
-                              ),
-                            ] else if (_stableError.isEmpty &&
-                                !_currentFeedback.perfectRep &&
-                                _currentFeedback.adjustment !=
-                                    'INITIALIZING...')
-                              const FeedbackChip(
-                                label: 'GOOD FORM',
-                                color: Colors.green,
-                              ),
-                            if (_currentFeedback.perfectRep &&
-                                _stableError.isEmpty)
-                              const FeedbackChip(
-                                label: 'PERFECT REP!',
-                                color: Color(0xFF00C6FF),
-                              ),
-                          ],
-                        ),
+                        child: _buildFeedbackChips(),
                       ),
                     ),
-
                     const SizedBox(height: 10),
-                    // End Workout Button
                     Center(
                       child: ElevatedButton(
                         onPressed: _isSavingReport ? null : _handleEndWorkout,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.grey.shade800,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 40,
-                            vertical: 15,
-                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(30),
-                          ),
-                          textStyle: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
                           ),
                         ),
                         child: _isSavingReport
@@ -909,13 +662,9 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
                             color: Colors.white,
                           ),
                         )
-                            : const Text(
-                          'END WORKOUT',
-                          style: TextStyle(color: Colors.white),
-                        ),
+                            : const Text('END WORKOUT', style: TextStyle(color: Colors.white)),
                       ),
                     ),
-                    const SizedBox(height: 5),
                   ],
                 ),
               ),
@@ -924,6 +673,50 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
         ),
       ),
     );
+  }
+
+  Widget _buildInfoColumn(String label, String value, {CrossAxisAlignment crossAxisAlignment = CrossAxisAlignment.start}) {
+    return Column(
+      crossAxisAlignment: crossAxisAlignment,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        Text(
+          value,
+          style: const TextStyle(
+            color: Color(0xFF00C6FF),
+            fontSize: 32,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildFeedbackChips() {
+    if (_stableError.isNotEmpty) {
+      return Column(
+        children: [
+          FeedbackChip(label: 'ERROR: $_stableError', color: Colors.red.shade700),
+          const SizedBox(height: 8),
+          FeedbackChip(label: 'ADJUST: $_stableError', color: Colors.amber.shade700),
+        ],
+      );
+    }
+    if (_currentFeedback.perfectRep) {
+      return const FeedbackChip(label: 'PERFECT REP!', color: Color(0xFF00C6FF));
+    }
+    if (_currentFeedback.adjustment != 'INITIALIZING...') {
+      return const FeedbackChip(label: 'GOOD FORM', color: Colors.green);
+    }
+    // Default/Initial state
+    return const FeedbackChip(label: 'INITIALIZING...', color: Colors.grey);
   }
 }
 
@@ -941,45 +734,181 @@ class FeedbackChip extends StatelessWidget {
         color: color,
         borderRadius: BorderRadius.circular(20),
       ),
-      child: Text(
-        label,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 14,
-          fontWeight: FontWeight.w500,
+      child: Center(
+        child: Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+          ),
+          overflow: TextOverflow.ellipsis,
+          maxLines: 2,
         ),
-        overflow: TextOverflow.ellipsis,
-        maxLines: 2,
       ),
     );
   }
 }
 
-// Extensions to help copy Feedback objects with new values
-extension on WorkoutFeedback {
-  WorkoutFeedback copyWith({
-    int? reps,
-    String? time,
-    String? error,
-    String? adjustment,
-    bool? perfectRep,
-  }) {
-    return WorkoutFeedback(
-      reps: reps ?? this.reps,
-      time: time ?? this.time,
-      error: error ?? this.error,
-      adjustment: adjustment ?? this.adjustment,
-      perfectRep: perfectRep ?? this.perfectRep,
-    );
-  }
+// This MUST be a top-level function to be used with compute
+Uint8List? _convertCameraImageToPng(Map<String, dynamic> imageParams) {
+  try {
+    final int width = imageParams['width'];
+    final int height = imageParams['height'];
+    final List<dynamic> planes = imageParams['planes'];
+    final String format = imageParams['format'];
 
-  WorkoutFeedback copyWithTime(String newTime) {
-    return WorkoutFeedback(
-      reps: reps,
-      time: newTime,
-      error: error,
-      adjustment: adjustment,
-      perfectRep: perfectRep,
+    img.Image? image;
+
+    if (format == 'ImageFormatGroup.yuv420') {
+      // YUV420 conversion
+      final yPlane = planes[0]['bytes'] as Uint8List;
+      final uPlane = planes[1]['bytes'] as Uint8List;
+      final vPlane = planes[2]['bytes'] as Uint8List;
+      final uvRowStride = planes[1]['bytesPerRow'] as int;
+      final uvPixelStride = 2; // In YUV420, U and V planes have a pixel stride of 2
+
+      image = img.Image(width: width, height: height);
+
+      for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+          final int uvIndex = (uvPixelStride * (x / 2).floor()) + (uvRowStride * (y / 2).floor());
+          final int index = y * width + x;
+
+          if (index >= yPlane.length || uvIndex >= uPlane.length || uvIndex >= vPlane.length) continue;
+
+          final yp = yPlane[index];
+          final up = uPlane[uvIndex];
+          final vp = vPlane[uvIndex];
+
+          int r = (yp + 1.402 * (vp - 128)).round();
+          int g = (yp - 0.344136 * (up - 128) - 0.714136 * (vp - 128)).round();
+          int b = (yp + 1.772 * (up - 128)).round();
+
+          image.setPixelRgba(x, y, r.clamp(0, 255), g.clamp(0, 255), b.clamp(0, 255), 255);
+        }
+      }
+    } else if (format == 'ImageFormatGroup.bgra8888') {
+      // BGRA8888 conversion for iOS
+      final plane = planes[0]['bytes'] as Uint8List;
+      image = img.Image.fromBytes(width: width, height: height, bytes: plane.buffer, order: img.ChannelOrder.bgra);
+    }
+
+    if (image == null) return null;
+
+    // Rotate 270 degrees for front camera to be upright
+    final img.Image rotatedImage = img.copyRotate(image, angle: 270);
+
+    // Resize to a reasonable dimension for the PDF
+    final img.Image resizedImage = img.copyResize(
+      rotatedImage,
+      width: 600,
+      interpolation: img.Interpolation.linear,
     );
+
+    return Uint8List.fromList(img.encodePng(resizedImage));
+  } catch (e) {
+    debugPrint("Error converting image in isolate: $e");
+    return null;
+  }
+}
+
+// This MUST be a top-level function for compute
+Future<String?> _generatePdfInBackground(Map<String, dynamic> params) async {
+  try {
+    final String exerciseName = params['exerciseName'];
+    final int reps = params['reps'];
+    final String time = params['time'];
+    final String savePath = params['savePath'];
+    final List<Map<String, dynamic>> errorReportsData = List<Map<String, dynamic>>.from(params['errorReports']);
+
+    final pdf = pw.Document();
+    final String dateTime = DateTime.now().toLocal().toString().split('.')[0];
+
+    // Title Page
+    pdf.addPage(
+      pw.Page(
+        build: (pw.Context context) {
+          return pw.Center(
+            child: pw.Column(
+              mainAxisAlignment: pw.MainAxisAlignment.center,
+              children: [
+                pw.Text('Workout Report', style: pw.TextStyle(fontSize: 40, fontWeight: pw.FontWeight.bold)),
+                pw.SizedBox(height: 20),
+                pw.Text(exerciseName.toUpperCase(), style: const pw.TextStyle(fontSize: 24)),
+                pw.SizedBox(height: 10),
+                pw.Text(dateTime, style: const pw.TextStyle(fontSize: 18)),
+                pw.SizedBox(height: 30),
+                pw.Text('Total Reps: $reps', style: const pw.TextStyle(fontSize: 20)),
+                pw.Text('Total Time: $time', style: const pw.TextStyle(fontSize: 20)),
+                pw.SizedBox(height: 50),
+                pw.Text(
+                  errorReportsData.isEmpty ? 'No errors detected. Great job!' : 'Found ${errorReportsData.length} unique error(s).',
+                  style: pw.TextStyle(
+                    fontSize: 18,
+                    color: errorReportsData.isEmpty ? PdfColors.green : PdfColors.red,
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+
+    // Error Pages
+    for (final reportData in errorReportsData) {
+      final String error = reportData['error'];
+      final Uint8List imageBytes = reportData['imageBytes'];
+      final List<String> timestamps = List<String>.from(reportData['timestamps']);
+      final pdfImage = pw.MemoryImage(imageBytes);
+
+      pdf.addPage(
+        pw.Page(
+          build: (pw.Context context) {
+            return pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text('ERROR: $error', style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold, color: PdfColors.red)),
+                pw.SizedBox(height: 20),
+                pw.Center(
+                  child: pw.Container(
+                    constraints: const pw.BoxConstraints(maxHeight: 350, maxWidth: 400),
+                    child: pw.Image(pdfImage, fit: pw.BoxFit.contain),
+                  ),
+                ),
+                pw.SizedBox(height: 20),
+                pw.Text('Occurred at:', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)),
+                pw.SizedBox(height: 10),
+                pw.Wrap(
+                  spacing: 8.0,
+                  runSpacing: 4.0,
+                  children: timestamps.map((time) {
+                    return pw.Container(
+                      padding: const pw.EdgeInsets.all(5),
+                      decoration: pw.BoxDecoration(
+                        color: PdfColors.grey200,
+                        borderRadius: pw.BorderRadius.circular(5),
+                      ),
+                      child: pw.Text(time),
+                    );
+                  }).toList(),
+                ),
+              ],
+            );
+          },
+        ),
+      );
+    }
+
+    // Save file
+    final File file = File(savePath);
+    await file.writeAsBytes(await pdf.save());
+
+    debugPrint('Report saved to $savePath');
+    return savePath;
+  } catch (e) {
+    debugPrint('Error generating PDF in background: $e');
+    return null;
   }
 }
