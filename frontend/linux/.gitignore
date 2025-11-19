@@ -1,0 +1,27 @@
+# Flutter ephemeral files
+flutter/ephemeral/
+flutter/ephemeral**
+
+# Generated files
+runner/generated_plugin_registrant.cc
+runner/generated_plugin_registrant.h
+flutter/generated_plugins.cmake
+flutter/generated_plugin_registrant.cc
+flutter/generated_plugin_registrant.h
+
+# Build output
+build/
+cmake-build-*/
+.ninja*
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CMake
+CMakeUserPresets.json

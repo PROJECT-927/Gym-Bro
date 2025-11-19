@@ -1,0 +1,21 @@
+# Web specific build artifacts
+*.js
+*.js.map
+*.dart.js
+*.dart.js.map
+.dart.js
+.dart.js.map
+
+# Web compilation
+*.wasm
+*.wasm.map
+*.js.deps.json
+*.js.tar.gz
+
+# Web server cache
+.dart_tool/
+.pub-cache/
+
+# OS files
+.DS_Store
+Thumbs.db

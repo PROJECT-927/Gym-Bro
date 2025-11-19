@@ -1,0 +1,4 @@
+# Ignore any large asset files or caches
+*.cache
+.DS_Store
+Thumbs.db
