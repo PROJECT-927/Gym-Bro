@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'feedback.dart';
-
+import  'ProfilePage.dart';
 class Exercise {
   final String name;
   final String imagePath;
@@ -31,6 +31,24 @@ class _ExerciseMenuScreenState extends State<ExerciseMenuScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      extendBodyBehindAppBar: true, // Keeps gradient behind the header
+  appBar: AppBar(
+    backgroundColor: Colors.transparent, // Invisible background
+    elevation: 0, // No shadow
+    // 'actions' are always on the RIGHT side
+    actions: [
+      IconButton(
+        icon: const Icon(Icons.person, color: Colors.white, size: 30),
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (context) => const ProfilePage()),
+          );
+        },
+      ),
+      const SizedBox(width: 15), // Padding from the right edge
+    ],
+  ),
       body: Container(
         // Background Gradient
         decoration: const BoxDecoration(
