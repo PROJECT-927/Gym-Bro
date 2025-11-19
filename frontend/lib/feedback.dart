@@ -11,7 +11,6 @@ import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:permission_handler/permission_handler.dart';
 import 'package:open_file/open_file.dart';
 
 /// This function runs in a separate isolate (background thread)
@@ -33,15 +32,15 @@ String _processFrameOnIsolate(Map<String, dynamic> params) {
   return jsonEncode(frameData);
 }
 
-// Placeholder for backend response structure
-class Feedback {
+// RENAMED to WorkoutFeedback to avoid conflict with Flutter's material Feedback class
+class WorkoutFeedback {
   final int reps;
   final String time;
   final String error;
   final String adjustment;
   final bool perfectRep;
 
-  Feedback({
+  WorkoutFeedback({
     required this.reps,
     required this.time,
     required this.error,
@@ -49,8 +48,8 @@ class Feedback {
     required this.perfectRep,
   });
 
-  factory Feedback.fromJson(Map<String, dynamic> json) {
-    return Feedback(
+  factory WorkoutFeedback.fromJson(Map<String, dynamic> json) {
+    return WorkoutFeedback(
       reps: json['reps'] ?? 0,
       time: json['time'] ?? '00:00',
       error: json['error'] ?? '',
@@ -86,7 +85,7 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
   WebSocketChannel? _channel;
   FlutterTts flutterTts = FlutterTts();
 
-  Feedback _currentFeedback = Feedback(
+  WorkoutFeedback _currentFeedback = WorkoutFeedback(
     reps: 0,
     time: '00:00',
     error: '',
@@ -107,15 +106,10 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
   final Map<String, ErrorReport> _errorReports = {};
   CameraImage? _currentCameraImage; // Holds the latest camera frame
   bool _isSavingReport = false; // To show loading indicator on button
-  bool _isWorkoutEnding = false; // FIX: Flag to prevent "Connection Lost" message
+  bool _isWorkoutEnding = false; // Flag to prevent "Connection Lost" message
 
   // IMPORTANT: Replace with your computer's local IP address.
-  // 1. Make sure your computer and phone are on the SAME Wi-Fi network.
-  // 2. Open a command prompt (cmd.exe) on your computer.
-  // 3. Type 'ipconfig' and press Enter.
-  // 4. Find the 'IPv4 Address' under your Wi-Fi adapter (e.g., 192.168.1.10).
-  // 5. Replace the placeholder below with that IP address.
-  final String _backendIpAddress = "10.255.77.179"; // <-- FIXED: Removed leading space
+  final String _backendIpAddress = "172.16.0.4";
   final int _backendPort = 8765;
 
   @override
@@ -144,7 +138,7 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
       CameraDescription frontCamera;
       try {
         frontCamera = cameras.firstWhere(
-          (camera) => camera.lensDirection == CameraLensDirection.front,
+              (camera) => camera.lensDirection == CameraLensDirection.front,
         );
       } catch (e) {
         debugPrint("No front camera found, using first available camera.");
@@ -153,9 +147,11 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
 
       _cameraController = CameraController(
         frontCamera,
-        ResolutionPreset.medium,
+        ResolutionPreset.high,
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.yuv420,
+        imageFormatGroup: Platform.isAndroid
+            ? ImageFormatGroup.yuv420
+            : ImageFormatGroup.bgra8888,
       );
 
       try {
@@ -183,20 +179,23 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
       _isProcessingFrame = true;
 
       try {
-        final Map<String, dynamic> isolateParams = {
-          'bytes': Uint8List.fromList(image.planes[0].bytes),
-          'width': image.width,
-          'height': image.height,
-          'bytesPerRow': image.planes[0].bytesPerRow,
-        };
+        // Only process if we have valid planes (usually 3 for YUV)
+        if (image.planes.isNotEmpty) {
+          final Map<String, dynamic> isolateParams = {
+            'bytes': Uint8List.fromList(image.planes[0].bytes),
+            'width': image.width,
+            'height': image.height,
+            'bytesPerRow': image.planes[0].bytesPerRow,
+          };
 
-        final String jsonString = await compute(
-          _processFrameOnIsolate,
-          isolateParams,
-        );
+          final String jsonString = await compute(
+            _processFrameOnIsolate,
+            isolateParams,
+          );
 
-        if (mounted) {
-          _channel!.sink.add(jsonString);
+          if (mounted && _channel != null) {
+            _channel!.sink.add(jsonString);
+          }
         }
       } catch (e) {
         debugPrint("Error sending frame: $e");
@@ -214,69 +213,72 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
       debugPrint("Attempting to connect to WebSocket: $uri");
       _channel!.sink.add(jsonEncode({'exercise': widget.exerciseName}));
       _channel!.stream.listen(
-        (message) {
+            (message) {
           if (mounted) {
-            final Map<String, dynamic> data = jsonDecode(message);
-            final Feedback newFeedback = Feedback.fromJson(
-              data,
-            ).copyWithTime(_currentFeedback.time);
+            try {
+              final Map<String, dynamic> data = jsonDecode(message);
+              final WorkoutFeedback newFeedback = WorkoutFeedback.fromJson(
+                data,
+              ).copyWithTime(_currentFeedback.time);
 
-            final String newError = newFeedback.error;
-            final String currentTime = newFeedback.time;
+              final String newError = newFeedback.error;
+              final String currentTime = newFeedback.time;
 
-            // Error logging logic
-            if (newError.isNotEmpty && _currentCameraImage != null) {
-              if (!_errorReports.containsKey(newError)) {
-                // First time seeing this error. Take snapshot.
-                _captureErrorScreenshot(
-                  newError,
-                  currentTime,
-                  _currentCameraImage!,
-                );
-              } else {
-                // Subsequent time. Just add timestamp if it's different.
-                final lastTime = _errorReports[newError]!.timestamps.last;
-                if (currentTime != lastTime) {
+              // Error logging logic
+              if (newError.isNotEmpty && _currentCameraImage != null) {
+                if (!_errorReports.containsKey(newError)) {
+                  // First time seeing this error. Take snapshot.
+                  _captureErrorScreenshot(
+                    newError,
+                    currentTime,
+                    _currentCameraImage!,
+                  );
+                } else {
+                  // Subsequent time. Just add timestamp if it's different.
+                  final lastTime = _errorReports[newError]!.timestamps.last;
+                  if (currentTime != lastTime) {
+                    setState(() {
+                      _errorReports[newError]!.timestamps.add(currentTime);
+                    });
+                  }
+                }
+              }
+
+              setState(() {
+                _currentFeedback = newFeedback.copyWith(error: _stableError);
+              });
+
+              if (newError != _potentialError) {
+                _errorTimer?.cancel();
+                _potentialError = newError;
+
+                if (newError.isEmpty) {
                   setState(() {
-                    _errorReports[newError]!.timestamps.add(currentTime);
+                    _stableError = "";
+                  });
+                  _lastSpokenError = "";
+                } else {
+                  _errorTimer = Timer(const Duration(seconds: 2), () {
+                    if (mounted && _potentialError == newError) {
+                      setState(() {
+                        _stableError = newError;
+                      });
+                      if (_stableError != _lastSpokenError) {
+                        _speak(_stableError);
+                        _lastSpokenError = _stableError;
+                      }
+                    }
                   });
                 }
               }
-            }
-
-            setState(() {
-              _currentFeedback = newFeedback.copyWith(error: _stableError);
-            });
-
-            if (newError != _potentialError) {
-              _errorTimer?.cancel();
-              _potentialError = newError;
-
-              if (newError.isEmpty) {
-                setState(() {
-                  _stableError = "";
-                });
-                _lastSpokenError = "";
-              } else {
-                _errorTimer = Timer(const Duration(seconds: 2), () {
-                  if (mounted && _potentialError == newError) {
-                    setState(() {
-                      _stableError = newError;
-                    });
-                    if (_stableError != _lastSpokenError) {
-                      _speak(_stableError);
-                      _lastSpokenError = _stableError;
-                    }
-                  }
-                });
-              }
+            } catch (e) {
+              debugPrint("Error processing WS message: $e");
             }
           }
         },
         onDone: () {
           debugPrint('WebSocket connection closed!');
           _errorTimer?.cancel();
-          // FIX: Don't show "CONNECTION LOST" if we are ending the workout intentionally.
           if (_isWorkoutEnding) return;
           if (mounted) {
             setState(() {
@@ -308,13 +310,24 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
 
   // Helper to capture and convert screenshot
   void _captureErrorScreenshot(
-    String error,
-    String time,
-    CameraImage cameraImage,
-  ) async {
+      String error,
+      String time,
+      CameraImage cameraImage,
+      ) async {
     try {
-      // This conversion runs in the background
-      final Uint8List? pngBytes = await compute(_convertYUVtoPNG, cameraImage);
+      // FIX: Extract raw data here. We CANNOT pass CameraImage to compute/isolate.
+      // It holds a pointer to native memory which isn't shared across threads.
+      final Map<String, dynamic> imageParams = {
+        'width': cameraImage.width,
+        'height': cameraImage.height,
+        'planes': cameraImage.planes.map((p) => {
+          'bytes': p.bytes,
+          'bytesPerRow': p.bytesPerRow,
+          'bytesPerPixel': p.bytesPerPixel,
+        }).toList(),
+      };
+
+      final Uint8List? pngBytes = await compute(_convertYUVtoPNG, imageParams);
 
       if (pngBytes != null && mounted) {
         setState(() {
@@ -333,25 +346,39 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
     }
   }
 
-  // Helper function to convert CameraImage to PNG
-  // This MUST be a top-level function or a static method to be used with compute
-  static Uint8List? _convertYUVtoPNG(CameraImage image) {
+  // Helper function to convert CameraImage planes to PNG
+  // Updated to accept Map instead of CameraImage for Isolate compatibility
+  static Uint8List? _convertYUVtoPNG(Map<String, dynamic> imageData) {
     try {
-      final int width = image.width;
-      final int height = image.height;
-      final int uvRowStride = image.planes[1].bytesPerRow;
-      final int? uvPixelStride = image.planes[1].bytesPerPixel;
+      final int width = imageData['width'];
+      final int height = imageData['height'];
+      final List<dynamic> planes = imageData['planes'];
 
-      final yPlane = image.planes[0].bytes;
-      final uPlane = image.planes[1].bytes;
-      final vPlane = image.planes[2].bytes;
+      // Basic validation for YUV420 (3 planes)
+      if (planes.length < 3) return null;
+
+      final int uvRowStride = planes[1]['bytesPerRow'];
+      final int? uvPixelStride = planes[1]['bytesPerPixel'];
+
+      final Uint8List yPlane = planes[0]['bytes'];
+      final Uint8List uPlane = planes[1]['bytes'];
+      final Uint8List vPlane = planes[2]['bytes'];
 
       var convertedImage = img.Image(width: width, height: height);
+
+      // Safety check for stride
+      final int pixelStride = uvPixelStride ?? 1;
+
       for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
           final int uvIndex =
-              uvPixelStride! * (x / 2).floor() + uvRowStride * (y / 2).floor();
+              pixelStride * (x / 2).floor() + uvRowStride * (y / 2).floor();
           final int index = y * width + x;
+
+          // Boundary checks
+          if (index >= yPlane.length || uvIndex >= uPlane.length || uvIndex >= vPlane.length) {
+            continue;
+          }
 
           final yp = yPlane[index];
           final up = uPlane[uvIndex];
@@ -372,12 +399,19 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
         }
       }
 
-      // Rotate the image because camera output is often landscape
-      // Adjust rotation angle if needed for your setup
-      final img.Image rotatedImage = img.copyRotate(convertedImage, angle: 90);
-      return Uint8List.fromList(img.encodePng(rotatedImage));
+      // Rotate 270 degrees for front camera and resize
+      final img.Image rotatedImage = img.copyRotate(convertedImage, angle: 270);
+
+      // Resize to a reasonable dimension
+      final img.Image resizedImage = img.copyResize(
+        rotatedImage,
+        width: 600,
+        interpolation: img.Interpolation.linear,
+      );
+
+      return Uint8List.fromList(img.encodePng(resizedImage));
     } catch (e) {
-      debugPrint("Error converting image: $e");
+      debugPrint("Error converting image in isolate: $e");
       return null;
     }
   }
@@ -390,25 +424,24 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
           int minutes = _timeInSeconds ~/ 60;
           int seconds = _timeInSeconds % 60;
           _currentFeedback = _currentFeedback.copyWith(
-            time:
-                '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}',
+            time: '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}',
           );
         });
       }
     });
   }
 
-  // NEW: Background PDF generation function
+  // PDF generation logic (unchanged but verified)
   static Future<String?> _generatePdfInBackground(
-    Map<String, dynamic> params,
-  ) async {
+      Map<String, dynamic> params,
+      ) async {
     try {
       final String exerciseName = params['exerciseName'];
       final int reps = params['reps'];
       final String time = params['time'];
       final String savePath = params['savePath'];
       final List<Map<String, dynamic>> errorReportsData =
-          params['errorReports'];
+      params['errorReports'];
 
       final pdf = pw.Document();
       final String dateTime = DateTime.now().toLocal().toString().split('.')[0];
@@ -490,7 +523,10 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
                   pw.SizedBox(height: 20),
                   pw.Center(
                     child: pw.Container(
-                      height: 400,
+                      constraints: const pw.BoxConstraints(
+                        maxHeight: 350,
+                        maxWidth: 400,
+                      ),
                       child: pw.Image(pdfImage, fit: pw.BoxFit.contain),
                     ),
                   ),
@@ -524,11 +560,9 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
         );
       }
 
-      // Save file
       final File file = File(savePath);
       await file.writeAsBytes(await pdf.save());
 
-      debugPrint('Report saved to $savePath');
       return savePath;
     } catch (e) {
       debugPrint('Error generating PDF in background: $e');
@@ -536,34 +570,26 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
     }
   }
 
-  // REVISED: Function to generate and save the PDF
   Future<String?> _generateAndSavePdf() async {
     try {
       debugPrint("Starting PDF generation...");
-
-      // 1. Get a directory where we can save the file.
-      // getApplicationDocumentsDirectory is private to the app and requires no permissions.
       final Directory appDocDir = await getApplicationDocumentsDirectory();
       final String fileName =
           'Workout_Report_${widget.exerciseName.replaceAll(' ', '_')}_${DateTime.now().millisecondsSinceEpoch}.pdf';
       final String savePath = '${appDocDir.path}/$fileName';
-      
+
       debugPrint("Final save path: $savePath");
 
-      // 2. Prepare error reports data for background processing
       final List<Map<String, dynamic>> errorReportsData = _errorReports.values
           .map((report) {
-            return {
-              'error': report.error,
-              'imageBytes': report.firstImage,
-              'timestamps': report.timestamps,
-            };
-          })
+        return {
+          'error': report.error,
+          'imageBytes': report.firstImage,
+          'timestamps': report.timestamps,
+        };
+      })
           .toList();
 
-      debugPrint("Prepared ${errorReportsData.length} error reports");
-
-      // 3. Generate PDF in background isolate
       final Map<String, dynamic> params = {
         'exerciseName': widget.exerciseName,
         'reps': _currentFeedback.reps,
@@ -572,17 +598,10 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
         'errorReports': errorReportsData,
       };
 
-      debugPrint("Starting background PDF generation...");
       final String? resultPath = await compute(
         _generatePdfInBackground,
         params,
       );
-
-      if (resultPath != null) {
-        debugPrint("PDF generation completed successfully: $resultPath");
-      } else {
-        debugPrint("PDF generation failed");
-      }
 
       return resultPath;
     } catch (e, stackTrace) {
@@ -592,31 +611,27 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
     }
   }
 
-  // REVISED: Function to handle ending the workout
   void _handleEndWorkout() async {
     if (_isSavingReport) return;
 
-    // Set flags to manage state
     _isWorkoutEnding = true;
     setState(() {
       _isSavingReport = true;
     });
 
-    // Stop all activities
     await _cameraController?.stopImageStream();
     _channel?.sink.close();
     _workoutTimer?.cancel();
     _errorTimer?.cancel();
     await flutterTts.stop();
 
-    // Show "Generating report..." dialog
     if (mounted) {
       showDialog(
         context: context,
         barrierDismissible: false,
         builder: (BuildContext context) {
           return PopScope(
-            canPop: false, // Prevent dismissing
+            canPop: false,
             child: AlertDialog(
               backgroundColor: const Color(0xFF1C1C1E),
               content: Column(
@@ -637,17 +652,14 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
       );
     }
 
-    // Generate PDF in background
     final String? pdfPath = await _generateAndSavePdf();
 
-    // Close "Generating report..." dialog
     if (mounted) {
       Navigator.of(context, rootNavigator: true).pop();
     }
 
     if (!mounted) return;
 
-    // Show final result dialog (Success or Failure)
     if (pdfPath != null) {
       showDialog(
         context: context,
@@ -890,17 +902,17 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
                         ),
                         child: _isSavingReport
                             ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              )
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
                             : const Text(
-                                'END WORKOUT',
-                                style: TextStyle(color: Colors.white),
-                              ),
+                          'END WORKOUT',
+                          style: TextStyle(color: Colors.white),
+                        ),
                       ),
                     ),
                     const SizedBox(height: 5),
@@ -944,15 +956,15 @@ class FeedbackChip extends StatelessWidget {
 }
 
 // Extensions to help copy Feedback objects with new values
-extension on Feedback {
-  Feedback copyWith({
+extension on WorkoutFeedback {
+  WorkoutFeedback copyWith({
     int? reps,
     String? time,
     String? error,
     String? adjustment,
     bool? perfectRep,
   }) {
-    return Feedback(
+    return WorkoutFeedback(
       reps: reps ?? this.reps,
       time: time ?? this.time,
       error: error ?? this.error,
@@ -961,8 +973,8 @@ extension on Feedback {
     );
   }
 
-  Feedback copyWithTime(String newTime) {
-    return Feedback(
+  WorkoutFeedback copyWithTime(String newTime) {
+    return WorkoutFeedback(
       reps: reps,
       time: newTime,
       error: error,
