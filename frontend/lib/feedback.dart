@@ -14,6 +14,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:open_file/open_file.dart';
 // Ensure this import points to your actual translation file location
 import 'package:frontend/translate.dart'; 
+import 'package:flutter/services.dart'; // <--- ADD THIS LINE
 
 // ============================================================================
 // BACKGROUND ISOLATE FUNCTIONS (Top Level)
@@ -156,7 +157,18 @@ Future<String?> _generatePdfInBackground(Map<String, dynamic> params) async {
     final String savePath = params['savePath'];
     final List<Map<String, dynamic>> errorReportsData = List<Map<String, dynamic>>.from(params['errorReports']);
 
-    final pdf = pw.Document();
+    // --- 3. Initialize the Font ---
+    final Uint8List fontBytes = params['fontBytes'];
+    final ttf = pw.Font.ttf(fontBytes.buffer.asByteData());
+
+    final pdf = pw.Document(
+      // --- 4. Set Default Theme with Custom Font ---
+      theme: pw.ThemeData.withFont(
+        base: ttf,
+        bold: ttf, // Use the same font or a bold version if you have one
+      ),
+    );
+
     final String dateTime = DateTime.now().toLocal().toString().split('.')[0];
 
     // Title Page
@@ -167,6 +179,7 @@ Future<String?> _generatePdfInBackground(Map<String, dynamic> params) async {
             child: pw.Column(
               mainAxisAlignment: pw.MainAxisAlignment.center,
               children: [
+                // Use style without manually setting font, as Theme handles it now
                 pw.Text('Workout Report', style: pw.TextStyle(fontSize: 40, fontWeight: pw.FontWeight.bold)),
                 pw.SizedBox(height: 20),
                 pw.Text(exerciseName.toUpperCase(), style: const pw.TextStyle(fontSize: 24)),
@@ -180,6 +193,7 @@ Future<String?> _generatePdfInBackground(Map<String, dynamic> params) async {
                   errorReportsData.isEmpty ? 'No errors detected. Great job!' : 'Found ${errorReportsData.length} unique error(s).',
                   style: pw.TextStyle(
                     fontSize: 18,
+                    // Font fallback logic in case color overrides needed
                     color: errorReportsData.isEmpty ? PdfColors.green : PdfColors.red,
                   ),
                 ),
@@ -203,6 +217,7 @@ Future<String?> _generatePdfInBackground(Map<String, dynamic> params) async {
             return pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
+                // The Theme will apply the font here automatically
                 pw.Text('ERROR: $error', style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold, color: PdfColors.red)),
                 pw.SizedBox(height: 20),
                 pw.Center(
@@ -243,7 +258,6 @@ Future<String?> _generatePdfInBackground(Map<String, dynamic> params) async {
     return null;
   }
 }
-
 // ============================================================================
 // MODELS
 // ============================================================================
@@ -359,7 +373,7 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
   bool _isWorkoutEnding = false;
 
   // IMPORTANT: Update this IP to your backend
-  final String _backendIpAddress = "10.138.56.179"; 
+  final String _backendIpAddress = "100.100.121.79"; 
   final int _backendPort = 8765;
 
   @override
@@ -628,8 +642,24 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
 
   Future<String?> _generateAndSavePdf() async {
     try {
+      // 1. Select the correct font file based on the current language code
+      String fontAssetPath;
+      if (widget.languageCode == 'hi') {
+        fontAssetPath = 'assets/fonts/Hindi.ttf';
+      } else if (widget.languageCode == 'kn') {
+        fontAssetPath = 'assets/fonts/Kannada.ttf';
+      } else {
+        fontAssetPath = 'assets/fonts/English.ttf';
+      }
+
+      // 2. Load the Font Bytes (rootBundle is now available due to the import)
+      final ByteData fontData = await rootBundle.load(fontAssetPath);
+      final Uint8List fontBytes = fontData.buffer.asUint8List();
+
       final Directory appDocDir = await getApplicationDocumentsDirectory();
-      final String fileName = 'Workout_Report_${widget.exerciseName.replaceAll(' ', '')}${DateTime.now().millisecondsSinceEpoch}.pdf';
+      // Added logic to ensure filename is safe
+      final String safeExerciseName = widget.exerciseName.replaceAll(' ', '');
+      final String fileName = 'Workout_Report_${safeExerciseName}_${DateTime.now().millisecondsSinceEpoch}.pdf';
       final String savePath = '${appDocDir.path}/$fileName';
 
       final List<Map<String, dynamic>> errorReportsData = _errorReports.values
@@ -645,6 +675,7 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
         'time': _currentFeedback.time,
         'savePath': savePath,
         'errorReports': errorReportsData,
+        'fontBytes': fontBytes, // Passing the correct font to the isolate
       };
 
       final String? resultPath = await compute(_generatePdfInBackground, params);
@@ -654,7 +685,6 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
       return null;
     }
   }
-
   void _handleEndWorkout() async {
     if (_isSavingReport) return;
 
