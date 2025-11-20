@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({Key? key}) : super(key: key);
@@ -11,8 +12,8 @@ class _ProfilePageState extends State<ProfilePage> {
   bool isEditing = false;
 
   // Profile data
-  String name = 'Sanath Shetty';
-  String age = '21';
+  String name = 'GYMBROOO';
+  String age = '00';
   String selectedLanguage = 'English';
 
   // Editing controllers
@@ -26,6 +27,56 @@ class _ProfilePageState extends State<ProfilePage> {
     super.initState();
     nameController = TextEditingController(text: name);
     ageController = TextEditingController(text: age);
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      // Get the saved code (en, kn, hi)
+      String code = prefs.getString('language_code') ?? 'en';
+      
+      // Convert code back to display string for the UI
+      if (code == 'kn') selectedLanguage = 'ಕನ್ನಡ (Kannada)';
+      else if (code == 'hi') selectedLanguage = 'हिंदी (Hindi)';
+      else selectedLanguage = 'English';
+      
+      // Load other fields if you saved them
+      name = prefs.getString('user_name') ?? name;
+      age = prefs.getString('user_age') ?? age;
+      
+      // Update controllers
+      nameController.text = name;
+      ageController.text = age;
+    });
+  }
+
+  String _getLanguageCode(String displayName) {
+    if (displayName.contains('Kannada')) return 'kn';
+    if (displayName.contains('Hindi')) return 'hi';
+    return 'en';
+  }
+
+  Future<void> saveProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+    
+    // Save to phone storage
+    await prefs.setString('user_name', nameController.text);
+    await prefs.setString('user_age', ageController.text);
+    await prefs.setString('language_code', _getLanguageCode(selectedLanguage));
+
+    setState(() {
+      name = nameController.text;
+      age = ageController.text;
+      isEditing = false;
+    });
+    
+    // Optional: Show a confirmation
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Profile Saved!')),
+      );
+    }
   }
 
   @override
@@ -35,13 +86,7 @@ class _ProfilePageState extends State<ProfilePage> {
     super.dispose();
   }
 
-  void saveProfile() {
-    setState(() {
-      name = nameController.text;
-      age = ageController.text;
-      isEditing = false;
-    });
-  }
+ 
 
   void cancelEdit() {
     setState(() {

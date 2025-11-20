@@ -13,6 +13,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:open_file/open_file.dart';
+import 'package:frontend/translate.dart';
 
 /// This function runs in a separate isolate (background thread)
 /// to avoid freezing the UI.
@@ -75,7 +76,13 @@ class ErrorReport {
 
 class ExerciseWorkoutScreen extends StatefulWidget {
   final String exerciseName;
-  const ExerciseWorkoutScreen({super.key, required this.exerciseName});
+  final String languageCode;
+
+  const ExerciseWorkoutScreen({
+    super.key,
+    required this.exerciseName,
+    required this.languageCode,
+  });
 
   @override
   State<ExerciseWorkoutScreen> createState() => _ExerciseWorkoutScreenState();
@@ -107,7 +114,8 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
   final Map<String, ErrorReport> _errorReports = {};
   CameraImage? _currentCameraImage; // Holds the latest camera frame
   bool _isSavingReport = false; // To show loading indicator on button
-  bool _isWorkoutEnding = false; // FIX: Flag to prevent "Connection Lost" message
+  bool _isWorkoutEnding =
+      false; // FIX: Flag to prevent "Connection Lost" message
 
   // IMPORTANT: Replace with your computer's local IP address.
   // 1. Make sure your computer and phone are on the SAME Wi-Fi network.
@@ -115,7 +123,7 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
   // 3. Type 'ipconfig' and press Enter.
   // 4. Find the 'IPv4 Address' under your Wi-Fi adapter (e.g., 192.168.1.10).
   // 5. Replace the placeholder below with that IP address.
-  final String _backendIpAddress = "10.255.77.179"; // <-- FIXED: Removed leading space
+  final String _backendIpAddress = "10.138.56.179"; 
   final int _backendPort = 8765;
 
   @override
@@ -128,7 +136,9 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
   }
 
   Future<void> _initializeTts() async {
-    await flutterTts.setLanguage("en-US");
+    await flutterTts.setLanguage(
+      AppTranslations.getTtsLocale(widget.languageCode),
+    );
     await flutterTts.setSpeechRate(0.5);
     await flutterTts.setVolume(1.0);
     await flutterTts.setPitch(1.0);
@@ -217,9 +227,30 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
         (message) {
           if (mounted) {
             final Map<String, dynamic> data = jsonDecode(message);
-            final Feedback newFeedback = Feedback.fromJson(
-              data,
-            ).copyWithTime(_currentFeedback.time);
+            // final Feedback newFeedback = Feedback.fromJson(
+            //   data,
+            // ).copyWithTime(_currentFeedback.time);
+            String rawError = data['error'] ?? '';
+            String rawAdjustment = data['adjustment'] ?? '';
+
+            // Use widget.languageCode here
+            String displayError = AppTranslations.translate(
+              rawError,
+              widget.languageCode,
+            );
+            String displayAdjustment = AppTranslations.translate(
+              rawAdjustment,
+              widget.languageCode,
+            );
+
+            // Update Feedback object with TRANSLATED text
+            final Feedback newFeedback = Feedback(
+              reps: data['reps'] ?? 0,
+              time: _currentFeedback.time,
+              error: displayError,
+              adjustment: displayAdjustment,
+              perfectRep: data['perfect_rep'] ?? false,
+            );
 
             final String newError = newFeedback.error;
             final String currentTime = newFeedback.time;
@@ -547,7 +578,7 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
       final String fileName =
           'Workout_Report_${widget.exerciseName.replaceAll(' ', '_')}_${DateTime.now().millisecondsSinceEpoch}.pdf';
       final String savePath = '${appDocDir.path}/$fileName';
-      
+
       debugPrint("Final save path: $savePath");
 
       // 2. Prepare error reports data for background processing
@@ -654,7 +685,10 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
         builder: (BuildContext dialogContext) {
           return AlertDialog(
             backgroundColor: const Color(0xFF1C1C1E),
-            title: const Text('Success!', style: TextStyle(color: Colors.green)),
+            title: const Text(
+              'Success!',
+              style: TextStyle(color: Colors.green),
+            ),
             content: const Text(
               'Report saved successfully!\n\nTap OPEN to view.',
               style: TextStyle(color: Colors.white),
@@ -666,14 +700,20 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
                   Navigator.of(context).popUntil((route) => route.isFirst);
                   OpenFile.open(pdfPath);
                 },
-                child: const Text('OPEN', style: TextStyle(color: Color(0xFF00C6FF))),
+                child: const Text(
+                  'OPEN',
+                  style: TextStyle(color: Color(0xFF00C6FF)),
+                ),
               ),
               TextButton(
                 onPressed: () {
                   Navigator.of(dialogContext).pop();
                   Navigator.of(context).popUntil((route) => route.isFirst);
                 },
-                child: const Text('CLOSE', style: TextStyle(color: Colors.white70)),
+                child: const Text(
+                  'CLOSE',
+                  style: TextStyle(color: Colors.white70),
+                ),
               ),
             ],
           );
@@ -696,7 +736,10 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
                   Navigator.of(dialogContext).pop();
                   Navigator.of(context).popUntil((route) => route.isFirst);
                 },
-                child: const Text('OK', style: TextStyle(color: Color(0xFF00C6FF))),
+                child: const Text(
+                  'OK',
+                  style: TextStyle(color: Color(0xFF00C6FF)),
+                ),
               ),
             ],
           );

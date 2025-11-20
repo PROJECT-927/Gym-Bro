@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'feedback.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import  'ProfilePage.dart';
+
 class Exercise {
   final String name;
   final String imagePath;
@@ -111,9 +113,13 @@ class _ExerciseMenuScreenState extends State<ExerciseMenuScreen> {
               // Start Workout Button
               Padding(
                 padding: const EdgeInsets.all(30.0),
-                child: StartWorkoutButton(
-                  onPressed: () {
+                child:  StartWorkoutButton(
+                  onPressed: () async {
                     if (_selectedExercise != null) {
+
+                      final prefs = await SharedPreferences.getInstance();
+      final String langCode = prefs.getString('language_code') ?? 'en';
+
                       // Action when "Start Workout" is pressed with an exercise selected
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
@@ -122,7 +128,7 @@ class _ExerciseMenuScreenState extends State<ExerciseMenuScreen> {
                         ),
                       );
                        Navigator.of(context).push(
-          MaterialPageRoute(builder: (context) => ExerciseWorkoutScreen(exerciseName: _selectedExercise!)),
+          MaterialPageRoute(builder: (context) => ExerciseWorkoutScreen(exerciseName: _selectedExercise!,languageCode: langCode)),
         );
                       // You can navigate to the workout screen here:
                       // Navigator.push(

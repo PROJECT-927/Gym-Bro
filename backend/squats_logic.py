@@ -1,124 +1,150 @@
-import asyncio
 import mediapipe as mp
-import numpy as np
 import json
-from utils import calculate_angle # Import from utils.py
+import numpy as np
+from utils import calculate_angle
 
-# --- MediaPipe Initialization (Global for this module) ---
 mpPose = mp.solutions.pose
-pose = mpPose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
-async def process_squats(img, state):
-    """
-    Processes a single image frame for Squats and returns feedback.
-    """
-    
-    # --- Unpack state variables ---
-    counter = state.get('counter', 0) 
-    stage = state.get('stage', 'up')
-    
-    # --- Frame variables ---
-    errors = []
-    visual_feedback = "Good Form"
-    perfect_rep = False
-    current_error = ""
+def process_squats(results, state):
+    reps = state.get('rep_counter', 0)
+    stage = state.get('stage', 'not ready')
+    ready = state.get('ready', False)
+    max_depth = state.get('max_depth', 180)
+    init_ankle_y = state.get('init_ankle_y', None)
+    hip_start_y = state.get('hip_start_y', None)
+    sh_start_y = state.get('sh_start_y', None)
 
-    try:
-        # --- Image Processing ---
-        # Image is already BGR, convert to RGB for MediaPipe
-        imgRGB = cv.cvtColor(img, cv.COLOR_BGR2RGB)
-        results = await asyncio.to_thread(pose.process, imgRGB)
+
+    KNEE_DOWN = 110
+    KNEE_UP = 150
+    KNEE_DEEP = 70
+    VIS_THRESH = 0.6
+
+    feedback = ""
+    error = ""
+    perfect = False
+
+    if results.pose_landmarks:
+        lm = results.pose_landmarks.landmark
         
-        # --- Crash-Proof Landmark Access ---
-        try:
-            if results.pose_landmarks:
-                landmarks = results.pose_landmarks.landmark
-                
-                # --- Automatic Side Detection (Left vs Right) ---
-                left_hip_visibility = landmarks[mpPose.PoseLandmark.LEFT_HIP.value].visibility
-                right_hip_visibility = landmarks[mpPose.PoseLandmark.RIGHT_HIP.value].visibility
+       
+        l_vis = lm[mpPose.PoseLandmark.LEFT_SHOULDER.value].visibility
+        r_vis = lm[mpPose.PoseLandmark.RIGHT_SHOULDER.value].visibility
+        
+        if l_vis > r_vis:
+            s_idx = mpPose.PoseLandmark.LEFT_SHOULDER.value
+            h_idx = mpPose.PoseLandmark.LEFT_HIP.value
+            k_idx = mpPose.PoseLandmark.LEFT_KNEE.value
+            a_idx = mpPose.PoseLandmark.LEFT_ANKLE.value
+        else:
+            s_idx = mpPose.PoseLandmark.RIGHT_SHOULDER.value
+            h_idx = mpPose.PoseLandmark.RIGHT_HIP.value
+            k_idx = mpPose.PoseLandmark.RIGHT_KNEE.value
+            a_idx = mpPose.PoseLandmark.RIGHT_ANKLE.value
 
-                if left_hip_visibility > right_hip_visibility:
-                    # Use LEFT side landmarks
-                    shoulder = [landmarks[mpPose.PoseLandmark.LEFT_SHOULDER.value].x, landmarks[mpPose.PoseLandmark.LEFT_SHOULDER.value].y]
-                    hip = [landmarks[mpPose.PoseLandmark.LEFT_HIP.value].x, landmarks[mpPose.PoseLandmark.LEFT_HIP.value].y]
-                    knee = [landmarks[mpPose.PoseLandmark.LEFT_KNEE.value].x, landmarks[mpPose.PoseLandmark.LEFT_KNEE.value].y]
-                    ankle = [landmarks[mpPose.PoseLandmark.LEFT_ANKLE.value].x, landmarks[mpPose.PoseLandmark.LEFT_ANKLE.value].y]
-                    toe = [landmarks[mpPose.PoseLandmark.LEFT_FOOT_INDEX.value].x, landmarks[mpPose.PoseLandmark.LEFT_FOOT_INDEX.value].y]
-                else:
-                    # Use RIGHT side landmarks
-                    shoulder = [landmarks[mpPose.PoseLandmark.RIGHT_SHOULDER.value].x, landmarks[mpPose.PoseLandmark.RIGHT_SHOULDER.value].y]
-                    hip = [landmarks[mpPose.PoseLandmark.RIGHT_HIP.value].x, landmarks[mpPose.PoseLandmark.RIGHT_HIP.value].y]
-                    knee = [landmarks[mpPose.PoseLandmark.RIGHT_KNEE.value].x, landmarks[mpPose.PoseLandmark.RIGHT_KNEE.value].y]
-                    ankle = [landmarks[mpPose.PoseLandmark.RIGHT_ANKLE.value].x, landmarks[mpPose.PoseLandmark.RIGHT_ANKLE.value].y]
-                    toe = [landmarks[mpPose.PoseLandmark.RIGHT_FOOT_INDEX.value].x, landmarks[mpPose.PoseLandmark.RIGHT_FOOT_INDEX.value].y]
+        sh = [lm[s_idx].x, lm[s_idx].y]
+        hip = [lm[h_idx].x, lm[h_idx].y]
+        knee = [lm[k_idx].x, lm[k_idx].y]
+        ankle = [lm[a_idx].x, lm[a_idx].y]
 
-                # --- Angle Calculations ---
-                knee_angle = calculate_angle(hip, knee, ankle)
-                hip_angle = calculate_angle(shoulder, hip, knee)
-                torso_angle = calculate_angle(shoulder, hip, ankle)
+        # --- Calculate Body Scale ---
+        shin_len = np.linalg.norm(np.array(knee) - np.array(ankle))
 
-                # --- Form Analysis & Feedback (Prioritized) ---
-                # Check for "Knees Past Toes" - compare x-coordinates
-                if knee[0] > toe[0] + 0.05: # 0.05 is a buffer
-                    errors.append("Knees past toes!")
-                # Check for "Back Straightness" - torso angle
-                elif torso_angle < 70:
-                    errors.append("Keep your chest up!")
+        if lm[s_idx].visibility < VIS_THRESH or lm[a_idx].visibility < VIS_THRESH:
+            error = "Full body not visible"
+        else:
+            knee_ang = calculate_angle(hip, knee, ankle)
 
-                # --- Repetition Counting Logic ---
-                if knee_angle < 100 and hip_angle < 100:
-                    stage = "down"
-                
-                if knee_angle > 160 and hip_angle > 160 and stage == 'down':
+            if not ready:
+                if knee_ang > 160:
+                    ready = True
+                    feedback = "Start Squat"
                     stage = "up"
-                    counter += 1
-                    if not errors: # Only a perfect rep if no errors
-                        perfect_rep = True
-
-                # --- Select the single highest-priority error ---
-                if errors:
-                    current_error = errors[0]
-                    visual_feedback = current_error
-                    perfect_rep = False
+                    init_ankle_y = ankle[1]
                 else:
-                    if stage == 'up':
-                        visual_feedback = "Squat Down"
-                    elif stage == 'down':
-                        visual_feedback = "Stand Up"
+                    feedback = "Stand Straight"
+            else:
+                # --- 1. DETECT ERRORS ---
+                # These are calculated regardless of what happens next
+                
+                # Knees Caving
+                if abs(knee[0] - ankle[0]) > (shin_len * 0.50) and stage == "down":
+                    error = "Knees caving in"
+                
+                # Heels Lifting
+                elif init_ankle_y and (init_ankle_y - ankle[1]) > (shin_len * 0.15) and stage == "down":
+                    error = "Heels lifting"
+                
+                # Hips Rising
+                elif stage == "up" and hip_start_y and sh_start_y:
+                    hip_rise = hip_start_y - hip[1]
+                    sh_rise = sh_start_y - sh[1]
+                    if abs(sh_rise) > 0.01 and abs(hip_rise)/abs(sh_rise) > 1.5:
+                        error = "Hips rising too fast"
+
+                # --- 2. STATE MACHINE (FIXED) ---
+                # We process stage changes even if there is an error, so you don't get stuck.
+
+                # GOING DOWN
+                if knee_ang < KNEE_DOWN:
+                    stage = "down"
+                    max_depth = min(max_depth, knee_ang)
                     
-                    if perfect_rep: # This gets set on the "up" motion
-                         visual_feedback = "Rep Counted!"
-                         
-            else: # No landmarks detected
-                current_error = "Not tracking. Are you in frame?"
-                visual_feedback = "Not tracking"
-                perfect_rep = False
+                    # Only show depth feedback if there isn't a more serious error
+                    if not error:
+                        feedback = "Go Deeper"
+                        if knee_ang <= KNEE_DEEP: feedback = "Perfect Depth"
+                        elif 70 <= knee_ang <= 100: feedback = "Good Parallel"
+                    
+                    hip_start_y = hip[1]
+                    sh_start_y = sh[1]
 
-        except Exception as e: # Catch landmark access errors
-            print(f"Landmark error (Squats): {e}")
-            current_error = "Make sure you are fully in frame"
-            visual_feedback = "Make sure you are fully in frame"
-            perfect_rep = False
+                # GOING UP (FINISHING REP)
+                elif knee_ang > KNEE_UP and stage == "down":
+                    stage = "up" # Force stage reset immediately
+                    
+                    # Now decide if we count the rep
+                    if error:
+                        # If there was an error during the movement, don't count it
+                        feedback = "Fix Form"
+                        perfect = False
+                    else:
+                        # If no error, check depth
+                        if max_depth > 130:
+                            error = "Not deep enough"
+                            perfect = False
+                        else:
+                            reps += 1
+                            perfect = True
+                            feedback = "Good Rep!"
+                    
+                    # Reset variables for next rep regardless of success/failure
+                    max_depth = 180
+                    hip_start_y = None
+                    sh_start_y = None
 
-    except Exception as e: # Catch other processing errors
-        print(f"Outer processing error (Squats): {e}")
-        visual_feedback = "Tracking error"
-        current_error = "Tracking error"
-        perfect_rep = False
+    else:
+        error = "Not tracking"
 
-    # --- Prepare Response ---
-    feedback_data = {
-        "reps": counter,
-        "error": current_error,
-        "adjustment": visual_feedback,
-        "perfect_rep": perfect_rep
+    # If we have an error, the feedback usually matches the error
+    final_feedback = feedback
+    if error:
+        final_feedback = error
+
+    data = { 
+        "reps": reps, 
+        "error": error, 
+        "adjustment": final_feedback, 
+        "perfect_rep": perfect 
     }
-
-    # --- Prepare Updated State ---
-    updated_state = {
-        'counter': counter,
-        'stage': stage
+    
+    new_state = { 
+        'rep_counter': reps, 
+        'stage': stage, 
+        'ready': ready, 
+        'max_depth': max_depth, 
+        'init_ankle_y': init_ankle_y, 
+        'hip_start_y': hip_start_y, 
+        'sh_start_y': sh_start_y 
     }
-
-    return json.dumps(feedback_data), updated_state
+    return json.dumps(data), new_state

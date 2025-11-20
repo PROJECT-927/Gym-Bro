@@ -2,21 +2,24 @@ import numpy as np
 import mediapipe as mp
 import time
 import json
+import math
 from utils import calculate_angle
 
 mpPose = mp.solutions.pose
 
-# --- Algorithm thresholds (from your original script) ---
+# --- Algorithm thresholds ---
 VIS_THRESHOLD = 0.5
 ELBOW_DOWN_THRESHOLD = 90
 ELBOW_UP_THRESHOLD = 160
-BODY_ANGLE_MIN = 150
+BODY_ANGLE_MIN = 150      # RELAXED: 160 was too strict, 150 allows for natural movement
 KNEE_ANGLE_MIN = 160
 ELBOW_TORSO_FLARE = 100
 ELBOW_TORSO_TUCK = 50
-NOT_LOW_ENOUGH_ELBOW = 110 # Elbow angle when "up" but not fully down
 SMOOTHING_ALPHA = 0.5
-MIN_CONSECUTIVE = 3 # Debounce frames
+MIN_CONSECUTIVE = 2
+
+# New Thresholds
+HANDS_FORWARD_RATIO = 0.3 
 
 def process_pushups(results, state):
     """
@@ -24,7 +27,7 @@ def process_pushups(results, state):
     """
     
     # --- Unpack state ---
-    stage = state.get('stage', 'UP') # Start in UP stage
+    stage = state.get('stage', 'UP')
     counter = state.get('counter', 0)
     down_frames = state.get('down_frames', 0)
     up_frames = state.get('up_frames', 0)
@@ -76,7 +79,7 @@ def process_pushups(results, state):
             if not vis_ok:
                 current_error = "Come closer / step into frame"
                 visual_feedback = "Not tracking"
-                down_frames = 0 # Reset debounce
+                down_frames = 0
                 up_frames = 0
             else:
                 # --- Get Coords (with smoothing) ---
@@ -100,6 +103,9 @@ def process_pushups(results, state):
                 knee_angle = calculate_angle(hip, knee, ankle)
                 body_angle = calculate_angle(shoulder, hip, ankle)
 
+                # Helper: Calculate Torso Length
+                torso_len = math.dist(shoulder, hip)
+
                 # --- Debounce Logic ---
                 if elbow_angle < ELBOW_DOWN_THRESHOLD:
                     down_frames += 1
@@ -112,43 +118,69 @@ def process_pushups(results, state):
                     up_frames = max(0, up_frames - 1)
 
                 # --- State Machine & Error Checking ---
-                form_ok = True
+                form_ok = True # Assume good form initially
                 
+                # 1. GLOBAL CHECKS
+                
+                # Check: Hands too far forward
+                shoulder_wrist_x_diff = abs(shoulder[0] - wrist[0])
+                if shoulder_wrist_x_diff > (torso_len * HANDS_FORWARD_RATIO):
+                    if stage == 'UP': 
+                        current_error = "Hands too far forward"
+                        form_ok = False
+
+                # Check: Hips too high (Piking)
+                if body_angle < BODY_ANGLE_MIN and current_error == "":
+                    midpoint_y = (shoulder[1] + ankle[1]) / 2
+                    if hip[1] < (midpoint_y - (0.1 * torso_len)): 
+                        current_error = "Hips too high"
+                        form_ok = False
+                    else:
+                        current_error = "Keep body straight"
+                        form_ok = False
+
+                # 2. STATE TRANSITIONS
                 if stage == 'UP':
                     if down_frames >= MIN_CONSECUTIVE:
                         stage = 'DOWN'
-                    # Check for errors while in 'UP' state
-                    elif body_angle < BODY_ANGLE_MIN:
-                        current_error = 'Keep your body straight'
-                    elif knee_angle < KNEE_ANGLE_MIN:
+                    
+                    elif knee_angle < KNEE_ANGLE_MIN and current_error == "":
                         current_error = 'Straighten your legs'
+                        form_ok = False
                         
                 elif stage == 'DOWN':
                     if up_frames >= MIN_CONSECUTIVE:
                         stage = 'UP'
-                        # Check form ON THE WAY UP to count the rep
+                        counter += 1 # FIX: Increment count REGARDLESS of form
+                        
+                        # Now validate if it was a "Perfect Rep"
                         if body_angle < BODY_ANGLE_MIN:
-                            current_error = "Keep your body straight"
+                            midpoint_y = (shoulder[1] + ankle[1]) / 2
+                            if hip[1] < midpoint_y:
+                                current_error = "Hips too high"
+                            else:
+                                current_error = "Keep body straight"
                             form_ok = False
+                        
                         elif knee_angle < KNEE_ANGLE_MIN:
                             current_error = "Straighten your legs"
                             form_ok = False
                         
                         if form_ok:
-                            counter += 1
                             perfect_rep = True
                             visual_feedback = "Good Rep!"
                         else:
-                            visual_feedback = current_error # Show the error
+                            perfect_rep = False
+                            visual_feedback = current_error # Counted, but showed error
                             
-                    # Check for errors while in 'DOWN' state
+                    # Check for flaring errors while in 'DOWN' state
                     if current_error == "":
                         if elbow_torso_angle > ELBOW_TORSO_FLARE:
                             current_error = "Don't flare your elbows"
                         elif elbow_torso_angle < ELBOW_TORSO_TUCK:
                             current_error = "Tuck your elbows closer"
         
-        else: # No landmarks
+        else: 
             current_error = "Not tracking. Are you in frame?"
             visual_feedback = "Not tracking"
 
@@ -160,9 +192,11 @@ def process_pushups(results, state):
     # --- Final Feedback ---
     if current_error:
         visual_feedback = current_error
-        perfect_rep = False
-    elif not perfect_rep: # Don't overwrite "Good Rep!"
-        visual_feedback = "Good Form"
+        # perfect_rep stays False
+    elif perfect_rep:
+         visual_feedback = "Good Rep!"
+    else:
+         visual_feedback = "Good Form" # Default state
 
     # --- Prepare JSON & State ---
     feedback_data = {
