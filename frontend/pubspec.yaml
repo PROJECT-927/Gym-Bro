@@ -72,6 +72,8 @@ flutter:
     - assets/shoulder_press.jpg
     - assets/barbell_curls.webp
     - assets/squats.jpg
+    - assets/Pushup.webp
+    - assets/plank.webp
     # - images/a_dot_ham.jpeg
 
   # An image asset can refer to one or more resolution-specific "variants", see

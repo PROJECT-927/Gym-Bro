@@ -13,12 +13,15 @@ def process_squats(results, state):
     init_ankle_y = state.get('init_ankle_y', None)
     hip_start_y = state.get('hip_start_y', None)
     sh_start_y = state.get('sh_start_y', None)
-
+    
+    # --- NEW: Retrieve fixed shin length from state ---
+    fixed_shin_len = state.get('fixed_shin_len', None)
 
     KNEE_DOWN = 110
     KNEE_UP = 150
     KNEE_DEEP = 70
     VIS_THRESH = 0.6
+    DEPTH_THRESHOLD = 140 # Relaxed threshold
 
     feedback = ""
     error = ""
@@ -27,7 +30,6 @@ def process_squats(results, state):
     if results.pose_landmarks:
         lm = results.pose_landmarks.landmark
         
-       
         l_vis = lm[mpPose.PoseLandmark.LEFT_SHOULDER.value].visibility
         r_vis = lm[mpPose.PoseLandmark.RIGHT_SHOULDER.value].visibility
         
@@ -47,8 +49,9 @@ def process_squats(results, state):
         knee = [lm[k_idx].x, lm[k_idx].y]
         ankle = [lm[a_idx].x, lm[a_idx].y]
 
-        # --- Calculate Body Scale ---
-        shin_len = np.linalg.norm(np.array(knee) - np.array(ankle))
+        # We calculate current length just for debugging/logging, 
+        # but we won't use it for math while moving.
+        current_shin_len = np.linalg.norm(np.array(knee) - np.array(ankle))
 
         if lm[s_idx].visibility < VIS_THRESH or lm[a_idx].visibility < VIS_THRESH:
             error = "Full body not visible"
@@ -57,40 +60,46 @@ def process_squats(results, state):
 
             if not ready:
                 if knee_ang > 160:
+                    # --- LATCHING PHASE ---
+                    # Only set shin length when standing straight
                     ready = True
+                    fixed_shin_len = current_shin_len 
+                    init_ankle_y = ankle[1]
+                    
                     feedback = "Start Squat"
                     stage = "up"
-                    init_ankle_y = ankle[1]
+                    print(f"System Ready. Shin Length Locked at: {fixed_shin_len:.4f}")
                 else:
                     feedback = "Stand Straight"
             else:
+                # Use the LOCKED shin length for all error checks
+                reference_len = fixed_shin_len if fixed_shin_len else current_shin_len
+
                 # --- 1. DETECT ERRORS ---
-                # These are calculated regardless of what happens next
-                
-                # Knees Caving
-                if abs(knee[0] - ankle[0]) > (shin_len * 0.50) and stage == "down":
-                    error = "Knees caving in"
-                
-                # Heels Lifting
-                elif init_ankle_y and (init_ankle_y - ankle[1]) > (shin_len * 0.15) and stage == "down":
-                    error = "Heels lifting"
-                
-                # Hips Rising
-                elif stage == "up" and hip_start_y and sh_start_y:
-                    hip_rise = hip_start_y - hip[1]
-                    sh_rise = sh_start_y - sh[1]
-                    if abs(sh_rise) > 0.01 and abs(hip_rise)/abs(sh_rise) > 1.5:
-                        error = "Hips rising too fast"
+                if knee_ang < 160: # Only check errors when actually moving
+                    print("angle", abs(knee[0] - ankle[0]))
+                    # Knees Caving (Fixed logic)
+                    if abs(knee[0] - ankle[0]) < (0.1) and stage == "down":
+                        error = "Knees caving in"
+                        print(error)
+                    # Not Deep Enough
+                    # Heels Lifting (Using locked length)
+                    elif init_ankle_y and (init_ankle_y - ankle[1]) > (reference_len * 0.20) and stage == "down":
+                        error = "Heels lifting"
+                        print(error)
+                    
+                    # Hips Rising
+                    elif stage == "up" and hip_start_y and sh_start_y:
+                        hip_rise = hip_start_y - hip[1]
+                        sh_rise = sh_start_y - sh[1]
+                        if abs(sh_rise) > 0.01 and abs(hip_rise)/abs(sh_rise) > 1.5:
+                            error = "Hips rising too fast"
 
-                # --- 2. STATE MACHINE (FIXED) ---
-                # We process stage changes even if there is an error, so you don't get stuck.
-
-                # GOING DOWN
+                # --- 2. STATE MACHINE ---
                 if knee_ang < KNEE_DOWN:
                     stage = "down"
                     max_depth = min(max_depth, knee_ang)
                     
-                    # Only show depth feedback if there isn't a more serious error
                     if not error:
                         feedback = "Go Deeper"
                         if knee_ang <= KNEE_DEEP: feedback = "Perfect Depth"
@@ -101,24 +110,24 @@ def process_squats(results, state):
 
                 # GOING UP (FINISHING REP)
                 elif knee_ang > KNEE_UP and stage == "down":
-                    stage = "up" # Force stage reset immediately
+                    stage = "up"
                     
-                    # Now decide if we count the rep
-                    if error:
-                        # If there was an error during the movement, don't count it
-                        feedback = "Fix Form"
+                    # REPAIRED REP COUNTING LOGIC
+                    if error and error != "Not deep enough":
+                        # Count the rep but mark it imperfect
+                        reps += 1
                         perfect = False
+                        feedback = f"Rep: {error}"
                     else:
-                        # If no error, check depth
-                        if max_depth > 130:
-                            error = "Not deep enough"
+                        if max_depth > DEPTH_THRESHOLD:
+                            feedback = "Squat Deeper!"
                             perfect = False
                         else:
                             reps += 1
                             perfect = True
                             feedback = "Good Rep!"
                     
-                    # Reset variables for next rep regardless of success/failure
+                    # Reset rep vars
                     max_depth = 180
                     hip_start_y = None
                     sh_start_y = None
@@ -126,7 +135,6 @@ def process_squats(results, state):
     else:
         error = "Not tracking"
 
-    # If we have an error, the feedback usually matches the error
     final_feedback = feedback
     if error:
         final_feedback = error
@@ -145,6 +153,7 @@ def process_squats(results, state):
         'max_depth': max_depth, 
         'init_ankle_y': init_ankle_y, 
         'hip_start_y': hip_start_y, 
-        'sh_start_y': sh_start_y 
+        'sh_start_y': sh_start_y,
+        'fixed_shin_len': fixed_shin_len # Save the locked length to state
     }
     return json.dumps(data), new_state
