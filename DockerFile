@@ -1,0 +1,31 @@
+# 1. Use an official Python runtime as a parent image
+FROM python:3.10-slim
+
+# 2. Set environment variables to prevent Python from buffering stdout/stderr
+ENV PYTHONUNBUFFERED=1
+
+# 3. Install system dependencies required for OpenCV and MediaPipe
+#    libgl1-mesa-glx and libglib2.0-0 are critical for cv2
+RUN apt-get update && apt-get install -y \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 4. Set the working directory in the container
+WORKDIR /app
+
+# 5. Copy the requirements file and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 6. Copy the backend source code into the container
+COPY backend/ ./backend/
+
+# 7. Change working directory to 'backend' so imports in server.py work correctly
+WORKDIR /app/backend
+
+# 8. Expose the port the WebSocket server runs on
+EXPOSE 8765
+
+
+CMD ["python", "server.py"]

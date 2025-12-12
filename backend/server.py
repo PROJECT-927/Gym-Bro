@@ -12,7 +12,7 @@ from shoulder_press_logic import process_shoulder_press
 from barbell_curl_logic import process_barbell_curl
 from plank_logic import process_plank
 from pushups_logic import process_pushups
-from squats_logic import process_squats
+# from squats_logic import process_squats
 
 # --- MediaPipe Initialization (Global) ---
 mpPose = mp.solutions.pose

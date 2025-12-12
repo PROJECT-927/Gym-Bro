@@ -14,6 +14,8 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:open_file/open_file.dart';
 // Ensure this import points to your actual translation file location
 import 'package:frontend/translate.dart'; 
+import 'package:flutter/services.dart';
+import 'dart:collection'; // For Queue
 
 // ============================================================================
 // BACKGROUND ISOLATE FUNCTIONS (Top Level)
@@ -147,6 +149,60 @@ Uint8List? _convertCameraImageToPng(Map<String, dynamic> imageParams) {
   }
 }
 
+/// Helper to group consecutive timestamps into ranges
+List<String> _groupTimestamps(List<String> timestamps) {
+  if (timestamps.isEmpty) return [];
+
+  // 1. Parse timestamps to seconds
+  List<int> seconds = timestamps.map((t) {
+    final parts = t.split(':');
+    if (parts.length == 2) {
+      return int.parse(parts[0]) * 60 + int.parse(parts[1]);
+    }
+    return 0;
+  }).toList();
+
+  // 2. Sort to be safe
+  seconds.sort();
+
+  List<String> grouped = [];
+  if (seconds.isEmpty) return grouped;
+
+  int start = seconds[0];
+  int prev = seconds[0];
+
+  for (int i = 1; i < seconds.length; i++) {
+    int current = seconds[i];
+    // If gap is > 2 seconds, break the group
+    // (Allowing 1 missing second to still bridge the gap, e.g. 0:05, 0:07 -> 0:05-0:07)
+    if (current > prev + 2) {
+      // Push previous range
+      if (start == prev) {
+        grouped.add(_formatSeconds(start));
+      } else {
+        grouped.add('${_formatSeconds(start)} - ${_formatSeconds(prev)}');
+      }
+      start = current;
+    }
+    prev = current;
+  }
+
+  // Push final range
+  if (start == prev) {
+    grouped.add(_formatSeconds(start));
+  } else {
+    grouped.add('${_formatSeconds(start)} - ${_formatSeconds(prev)}');
+  }
+
+  return grouped;
+}
+
+String _formatSeconds(int totalSeconds) {
+  int m = totalSeconds ~/ 60;
+  int s = totalSeconds % 60;
+  return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+}
+
 /// Generates the PDF in the background
 Future<String?> _generatePdfInBackground(Map<String, dynamic> params) async {
   try {
@@ -156,31 +212,80 @@ Future<String?> _generatePdfInBackground(Map<String, dynamic> params) async {
     final String savePath = params['savePath'];
     final List<Map<String, dynamic>> errorReportsData = List<Map<String, dynamic>>.from(params['errorReports']);
 
-    final pdf = pw.Document();
+    // --- 3. Initialize the Font ---
+    final Uint8List fontBytes = params['fontBytes'];
+    final ttf = pw.Font.ttf(fontBytes.buffer.asByteData());
+
+    // Gym-Bro Cyan Color
+    const PdfColor cyanColor = PdfColor.fromInt(0xFF00C6FF);
+    const PdfColor darkBg = PdfColor.fromInt(0xFF1C1C1E);
+
+    final pdf = pw.Document(
+      theme: pw.ThemeData.withFont(
+        base: ttf,
+        bold: ttf,
+      ),
+    );
+
     final String dateTime = DateTime.now().toLocal().toString().split('.')[0];
 
     // Title Page
     pdf.addPage(
       pw.Page(
         build: (pw.Context context) {
-          return pw.Center(
+          return pw.Container(
+            decoration: pw.BoxDecoration(
+              border: pw.Border.all(color: cyanColor, width: 4),
+              borderRadius: pw.BorderRadius.circular(20),
+            ),
+            padding: const pw.EdgeInsets.all(40),
             child: pw.Column(
               mainAxisAlignment: pw.MainAxisAlignment.center,
               children: [
-                pw.Text('Workout Report', style: pw.TextStyle(fontSize: 40, fontWeight: pw.FontWeight.bold)),
-                pw.SizedBox(height: 20),
-                pw.Text(exerciseName.toUpperCase(), style: const pw.TextStyle(fontSize: 24)),
+                pw.Text('GYM-BRO', style: pw.TextStyle(fontSize: 50, fontWeight: pw.FontWeight.bold, color: cyanColor)),
                 pw.SizedBox(height: 10),
-                pw.Text(dateTime, style: const pw.TextStyle(fontSize: 18)),
-                pw.SizedBox(height: 30),
-                pw.Text('Total Reps: $reps', style: const pw.TextStyle(fontSize: 20)),
-                pw.Text('Total Time: $time', style: const pw.TextStyle(fontSize: 20)),
-                pw.SizedBox(height: 50),
-                pw.Text(
-                  errorReportsData.isEmpty ? 'No errors detected. Great job!' : 'Found ${errorReportsData.length} unique error(s).',
-                  style: pw.TextStyle(
-                    fontSize: 18,
-                    color: errorReportsData.isEmpty ? PdfColors.green : PdfColors.red,
+                pw.Text('WORKOUT REPORT', style: pw.TextStyle(fontSize: 30, fontWeight: pw.FontWeight.bold)),
+                pw.Divider(color: cyanColor, thickness: 2),
+                pw.SizedBox(height: 40),
+                pw.Text(exerciseName.toUpperCase(), style: pw.TextStyle(fontSize: 36, fontWeight: pw.FontWeight.bold)),
+                pw.SizedBox(height: 10),
+                pw.Text(dateTime, style: const pw.TextStyle(fontSize: 18, color: PdfColors.grey700)),
+                pw.SizedBox(height: 60),
+                
+                // Stats Grid
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceEvenly,
+                  children: [
+                    pw.Column(
+                      children: [
+                        pw.Text('REPS', style: const pw.TextStyle(fontSize: 20, color: PdfColors.grey700)),
+                        pw.Text('$reps', style: pw.TextStyle(fontSize: 40, fontWeight: pw.FontWeight.bold, color: cyanColor)),
+                      ],
+                    ),
+                    pw.Column(
+                      children: [
+                        pw.Text('TIME', style: const pw.TextStyle(fontSize: 20, color: PdfColors.grey700)),
+                        pw.Text(time, style: pw.TextStyle(fontSize: 40, fontWeight: pw.FontWeight.bold, color: cyanColor)),
+                      ],
+                    ),
+                  ],
+                ),
+                
+                pw.SizedBox(height: 60),
+                pw.Container(
+                  padding: const pw.EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  decoration: pw.BoxDecoration(
+                    color: errorReportsData.isEmpty ? PdfColors.green100 : PdfColors.red100,
+                    borderRadius: pw.BorderRadius.circular(10),
+                    border: pw.Border.all(color: errorReportsData.isEmpty ? PdfColors.green : PdfColors.red),
+                  ),
+                  child: pw.Text(
+                    errorReportsData.isEmpty ? 'PERFECT WORKOUT! NO ERRORS.' : 'ATTENTION NEEDED: ${errorReportsData.length} ISSUES FOUND',
+                    style: pw.TextStyle(
+                      fontSize: 18,
+                      fontWeight: pw.FontWeight.bold,
+                      color: errorReportsData.isEmpty ? PdfColors.green900 : PdfColors.red900,
+                    ),
                   ),
                 ),
               ],
@@ -194,7 +299,8 @@ Future<String?> _generatePdfInBackground(Map<String, dynamic> params) async {
     for (final reportData in errorReportsData) {
       final String error = reportData['error'];
       final Uint8List imageBytes = reportData['imageBytes'];
-      final List<String> timestamps = List<String>.from(reportData['timestamps']);
+      final List<String> rawTimestamps = List<String>.from(reportData['timestamps']);
+      final List<String> timestamps = _groupTimestamps(rawTimestamps);
       final pdfImage = pw.MemoryImage(imageBytes);
 
       pdf.addPage(
@@ -203,28 +309,69 @@ Future<String?> _generatePdfInBackground(Map<String, dynamic> params) async {
             return pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
-                pw.Text('ERROR: $error', style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold, color: PdfColors.red)),
+                // Header
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Text('GYM-BRO REPORT', style: pw.TextStyle(fontSize: 14, color: cyanColor, fontWeight: pw.FontWeight.bold)),
+                    pw.Text(dateTime, style: const pw.TextStyle(fontSize: 12, color: PdfColors.grey600)),
+                  ],
+                ),
+                pw.Divider(color: PdfColors.grey300),
                 pw.SizedBox(height: 20),
+
+                // Error Title
+                pw.Container(
+                  padding: const pw.EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+                  decoration: pw.BoxDecoration(
+                    color: PdfColors.red50,
+                    border: pw.Border(left: pw.BorderSide(color: PdfColors.red, width: 5)),
+                  ),
+                  child: pw.Row(
+                    children: [
+                      pw.Text('ISSUE DETECTED:', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.red900)),
+                      pw.SizedBox(width: 10),
+                      pw.Expanded(
+                        child: pw.Text(error, style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold, color: PdfColors.black)),
+                      ),
+                    ],
+                  ),
+                ),
+                pw.SizedBox(height: 30),
+
+                // Image
                 pw.Center(
                   child: pw.Container(
-                    constraints: const pw.BoxConstraints(maxHeight: 350, maxWidth: 400),
+                    decoration: pw.BoxDecoration(
+                      border: pw.Border.all(color: PdfColors.grey400),
+                      boxShadow: const [
+                        pw.BoxShadow(
+                          color: PdfColors.grey300,
+                          blurRadius: 10,
+                          spreadRadius: 2,
+                        ),
+                      ],
+                    ),
+                    constraints: const pw.BoxConstraints(maxHeight: 400, maxWidth: 450),
                     child: pw.Image(pdfImage, fit: pw.BoxFit.contain),
                   ),
                 ),
-                pw.SizedBox(height: 20),
-                pw.Text('Occurred at:', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)),
+                pw.SizedBox(height: 30),
+
+                // Timestamps
+                pw.Text('OCCURRENCES', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.grey700)),
                 pw.SizedBox(height: 10),
                 pw.Wrap(
-                  spacing: 8.0,
-                  runSpacing: 4.0,
+                  spacing: 10.0,
+                  runSpacing: 10.0,
                   children: timestamps.map((time) {
                     return pw.Container(
-                      padding: const pw.EdgeInsets.all(5),
+                      padding: const pw.EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                       decoration: pw.BoxDecoration(
-                        color: PdfColors.grey200,
-                        borderRadius: pw.BorderRadius.circular(5),
+                        color: cyanColor,
+                        borderRadius: pw.BorderRadius.circular(15),
                       ),
-                      child: pw.Text(time),
+                      child: pw.Text(time, style: pw.TextStyle(color: PdfColors.white, fontWeight: pw.FontWeight.bold)),
                     );
                   }).toList(),
                 ),
@@ -243,7 +390,6 @@ Future<String?> _generatePdfInBackground(Map<String, dynamic> params) async {
     return null;
   }
 }
-
 // ============================================================================
 // MODELS
 // ============================================================================
@@ -312,6 +458,22 @@ class ErrorReport {
   });
 }
 
+class PendingFrame {
+  final List<Map<String, dynamic>> planes;
+  final int width;
+  final int height;
+  final String format;
+  final DateTime timestamp;
+
+  PendingFrame({
+    required this.planes,
+    required this.width,
+    required this.height,
+    required this.format,
+    required this.timestamp,
+  });
+}
+
 // ============================================================================
 // MAIN SCREEN
 // ============================================================================
@@ -354,12 +516,16 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
 
   // State variables for error reporting
   final Map<String, ErrorReport> _errorReports = {};
-  CameraImage? _currentCameraImage;
+  // Removed _currentCameraImage as we now use the queue
+  final Queue<PendingFrame> _pendingFrames = Queue();
   bool _isSavingReport = false;
   bool _isWorkoutEnding = false;
 
   // IMPORTANT: Update this IP to your backend
-  final String _backendIpAddress = "10.138.56.179"; 
+  // final String _backendIpAddress = "gymbro-live-app.azurewebsites.net"; 
+  //final int _backendPort = 8765;
+
+  final String _backendIpAddress = "172.28.103.179";
   final int _backendPort = 8765;
 
   @override
@@ -436,32 +602,58 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
 
   void _startImageStream() {
     _cameraController?.startImageStream((CameraImage image) {
-      _currentCameraImage = image; // Keep full res for PDF
-
       if (_channel == null || _isProcessingFrame) {
         return;
       }
       _isProcessingFrame = true;
 
-      // Prepare params (Pass ALL planes for proper color conversion)
+      // Deep copy planes for the queue because CameraImage is recycled
+      final List<Map<String, dynamic>> copiedPlanes = image.planes.map((p) => {
+        'bytes': Uint8List.fromList(p.bytes), // Deep copy
+        'bytesPerRow': p.bytesPerRow,
+      }).toList();
+
+      final PendingFrame pendingFrame = PendingFrame(
+        planes: copiedPlanes,
+        width: image.width,
+        height: image.height,
+        format: image.format.group.toString(),
+        timestamp: DateTime.now(),
+      );
+
+      // Prepare params for isolate
       final imageParams = {
         'width': image.width,
         'height': image.height,
         'format': image.format.group.toString(),
-        'planes': image.planes.map((p) => {
-          'bytes': p.bytes,
-          'bytesPerRow': p.bytesPerRow,
-        }).toList(),
+        'planes': copiedPlanes, // Use the copied planes
       };
 
       compute(_processFrameOnIsolate, imageParams).then((jsonString) {
         if (mounted && _channel != null && jsonString.isNotEmpty) {
           _channel!.sink.add(jsonString);
-        }
-        // Small delay to prevent flooding the network
-        Future.delayed(const Duration(milliseconds: 50), () {
+          // Only enqueue if we successfully sent to backend
+          _pendingFrames.add(pendingFrame);
+          
+          // Safety: Prevent infinite memory growth if backend stops responding
+          if (_pendingFrames.length > 30) {
+            _pendingFrames.removeFirst();
+          }
+
+          // STOP-AND-WAIT: Do NOT reset _isProcessingFrame here.
+          // We wait for the WebSocket response to reset it.
+          // Add a safety timeout in case the backend never replies.
+          Future.delayed(const Duration(seconds: 2), () {
+            if (mounted && _isProcessingFrame) {
+              _isProcessingFrame = false;
+              // If we timed out, we might want to clear the queue to avoid mismatch?
+              // But for now, let's just allow the next frame.
+            }
+          });
+        } else {
+          // If we didn't send, we can reset immediately
           _isProcessingFrame = false;
-        });
+        }
       }).catchError((e) {
         debugPrint("Error in frame processing isolate: $e");
         _isProcessingFrame = false;
@@ -479,6 +671,9 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
       _channel!.stream.listen(
             (message) {
           if (mounted) {
+            // STOP-AND-WAIT: We received a response, so we can process the next frame.
+            _isProcessingFrame = false;
+
             try {
               final Map<String, dynamic> data = jsonDecode(message);
               
@@ -509,9 +704,15 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
               final String newError = newFeedback.error;
               final String currentTime = newFeedback.time;
 
-              if (newError.isNotEmpty && _currentCameraImage != null) {
+              // Retrieve the frame that caused this response
+              PendingFrame? frameForThisResponse;
+              if (_pendingFrames.isNotEmpty) {
+                frameForThisResponse = _pendingFrames.removeFirst();
+              }
+
+              if (newError.isNotEmpty && frameForThisResponse != null) {
                 if (!_errorReports.containsKey(newError)) {
-                  _captureErrorScreenshot(newError, currentTime, _currentCameraImage!);
+                  _captureErrorScreenshot(newError, currentTime, frameForThisResponse);
                 } else {
                   final lastTime = _errorReports[newError]!.timestamps.last;
                   if (currentTime != lastTime) {
@@ -584,15 +785,12 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
     }
   }
 
-  void _captureErrorScreenshot(String error, String time, CameraImage cameraImage) {
+  void _captureErrorScreenshot(String error, String time, PendingFrame frame) {
     final imageParams = {
-      'width': cameraImage.width,
-      'height': cameraImage.height,
-      'planes': cameraImage.planes.map((p) => {
-        'bytes': p.bytes,
-        'bytesPerRow': p.bytesPerRow,
-      }).toList(),
-      'format': cameraImage.format.group.toString(),
+      'width': frame.width,
+      'height': frame.height,
+      'planes': frame.planes,
+      'format': frame.format,
     };
 
     compute(_convertCameraImageToPng, imageParams).then((pngBytes) {
@@ -628,8 +826,24 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
 
   Future<String?> _generateAndSavePdf() async {
     try {
+      // 1. Select the correct font file based on the current language code
+      String fontAssetPath;
+      if (widget.languageCode == 'hi') {
+        fontAssetPath = 'assets/fonts/Hindi.ttf';
+      } else if (widget.languageCode == 'kn') {
+        fontAssetPath = 'assets/fonts/Kannada.ttf';
+      } else {
+        fontAssetPath = 'assets/fonts/English.ttf';
+      }
+
+      // 2. Load the Font Bytes (rootBundle is now available due to the import)
+      final ByteData fontData = await rootBundle.load(fontAssetPath);
+      final Uint8List fontBytes = fontData.buffer.asUint8List();
+
       final Directory appDocDir = await getApplicationDocumentsDirectory();
-      final String fileName = 'Workout_Report_${widget.exerciseName.replaceAll(' ', '')}${DateTime.now().millisecondsSinceEpoch}.pdf';
+      // Added logic to ensure filename is safe
+      final String safeExerciseName = widget.exerciseName.replaceAll(' ', '');
+      final String fileName = 'Workout_Report_${safeExerciseName}_${DateTime.now().millisecondsSinceEpoch}.pdf';
       final String savePath = '${appDocDir.path}/$fileName';
 
       final List<Map<String, dynamic>> errorReportsData = _errorReports.values
@@ -645,6 +859,7 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
         'time': _currentFeedback.time,
         'savePath': savePath,
         'errorReports': errorReportsData,
+        'fontBytes': fontBytes, // Passing the correct font to the isolate
       };
 
       final String? resultPath = await compute(_generatePdfInBackground, params);
@@ -654,7 +869,6 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
       return null;
     }
   }
-
   void _handleEndWorkout() async {
     if (_isSavingReport) return;
 
@@ -767,7 +981,6 @@ class _ExerciseWorkoutScreenState extends State<ExerciseWorkoutScreen> {
         title: Text(
           widget.exerciseName.toUpperCase(),
           style: const TextStyle(
-            color: Colors.white,
             fontSize: 20,
             fontWeight: FontWeight.bold,
           ),

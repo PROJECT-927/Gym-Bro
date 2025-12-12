@@ -74,6 +74,9 @@ flutter:
     - assets/squats.jpg
     - assets/Pushup.webp
     - assets/plank.webp
+    - assets/fonts/English.ttf
+    - assets/fonts/Hindi.ttf 
+    - assets/fonts/Kannada.ttf
     # - images/a_dot_ham.jpeg
 
   # An image asset can refer to one or more resolution-specific "variants", see

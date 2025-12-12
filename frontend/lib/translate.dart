@@ -35,17 +35,31 @@ class AppTranslations {
       
       // --- Plank ---
       'Get into plank position': 'प्लैंक स्थिति में आएं',
-      'Align shoulders over elbows': 'कंधों को कोहनी के ऊपर रखें',
-      'Keep forearms flat': 'भुजाओं को सीधा रखें',
-      'Warning: Hips are sagging': 'चेतावनी: कूल्हे नीचे झुक रहे हैं',
-      'Timer Paused - Get Back Up!': 'टाइमर रुका - वापस ऊपर आएं!',
+      "Hips too high - lower them": 'कूल्हे बहुत ऊंचे हैं - उन्हें नीचे करें',
+      "Hips sagging - engage your core": 'कूल्हे नीचे झुक रहे हैं - अपने कोर को सक्रिय करें',
+      "Keep body straight": 'शरीर सीधा रखें',
+      "Come closer / step into frame": 'करीब आएं / फ्रेम में कदम रखें',
+      "Straighten your legs": 'अपने पैर सीधे करें',
+      'Align shoulders over elbows': 'कंधों को कोहनी के ऊपर संरेखित करें',
+      "Don't drop your head": 'अपना सिर न गिराएं',
+      "Don't look up - neutral neck": 'ऊपर न देखें - गर्दन तटस्थ रखें',
+      "Get up into plank position": 'करीब आएं / फ्रेम में कदम रखें',
+      "Not in plank - body too low": 'प्लैंक में नहीं - शरीर बहुत नीचे है',
+      "Get into forearm plank position": 'फोरआर्म प्लैंक स्थिति में आएं',
+      // "Make sure you are fully in frame": 'सुनिश्चित करें कि आप पूरी तरह फ्रेम में हैं',
+      
       
       // --- Pushups ---
       'Keep your body straight': 'शरीर सीधा रखें',
-      'Straighten your legs': 'पैर सीधे करें',
+    //  "Not tracking. Are you in frame?": 'ट्रैकिंग नहीं हो रही। क्या आप फ्रेम में हैं?',
       "Don't flare your elbows": 'कोहनी बाहर न निकालें',
       'Tuck your elbows closer': 'कोहनी अंदर रखें',
       'Good Rep!': 'अच्छा रेप!',
+      "Hands too far forward": 'हाथ बहुत आगे हैं',
+      "Hips too high": 'कूल्हे बहुत ऊंचे हैं',
+      "Hips too low": 'कूल्हे बहुत नीचे हैं',
+
+      
 
       // --- Shoulder Press ---
       'Bring your elbows up': 'कोहनी ऊपर लाएं',
@@ -77,17 +91,34 @@ class AppTranslations {
       
       // --- Plank ---
       'Get into plank position': 'ಪ್ಲ್ಯಾಂಕ್ ಸ್ಥಿತಿಗೆ ಬನ್ನಿ',
-      'Align shoulders over elbows': 'ಭುಜಗಳನ್ನು ಮೊಣಕೈಗಳ ನೇರಕ್ಕೆ ಇರಿಸಿ',
-      'Keep forearms flat': 'ಮುಂಗೈಗಳನ್ನು ಚಪ್ಪಟೆಯಾಗಿಡಿ',
-      'Warning: Hips are sagging': 'ಎಚ್ಚರಿಕೆ: ಸೊಂಟ ಜಾರುತ್ತಿದೆ',
-      'Timer Paused - Get Back Up!': 'ಟೈಮರ್ ನಿಲ್ಲಿಸಲಾಗಿದೆ - ಮೇಲೆ ಬನ್ನಿ!',
+      "Hips too high - lower them": 'ಹಿಪ್ಸ್ ತುಂಬಾ ಎತ್ತರದಲ್ಲಿವೆ - ಅವುಗಳನ್ನು ಇಳಿಸಿ',
+      "Hips sagging - engage your core": 'ಹಿಪ್ಸ್ ಕುಸಿಯುತ್ತಿವೆ - ನಿಮ್ಮ ಕೋರ್ ಅನ್ನು ಸಕ್ರಿಯಗೊಳಿಸಿ',
+      "Keep body straight": 'ದೇಹವನ್ನು ನೇರವಾಗಿಡಿ',
+      "Come closer / step into frame": 'ಹತ್ತಿರ ಬನ್ನಿ / ಫ್ರೇಮ್‌ಗೆ ಹೆಜ್ಜೆ ಹಾಕಿ',
+      "Straighten your legs": 'ಕಾಲುಗಳನ್ನು ನೇರಗೊಳಿಸಿ',
+      'Align shoulders over elbows': 'ಮೊಣಕೈಗಳ ಮೇಲೆ ಭುಜಗಳನ್ನು ಸರಿಹೊಂದಿಸಿ',
+      "Don't drop your head": 'ನಿಮ್ಮ ತಲೆಯನ್ನು ಬಿಸುಡಿ ಮಾಡಬೇಡಿ',
+      "Don't look up - neutral neck": 'ಮೇಲಕ್ಕೆ ನೋಡಬೇಡಿ - ತಟಸ್ಥ ಕುತ್ತಿಗೆಯನ್ನು ಇಡಿ',
+      "Get up into plank position": 'ಪ್ಲ್ಯಾಂಕ್ ಸ್ಥಿತಿಗೆ ಬನ್ನಿ',
+      "Not in plank - body too low": 'ಪ್ಲ್ಯಾಂಕ್‌ನಲ್ಲಿ ಇಲ್ಲ - ದೇಹ ತುಂಬಾ ಕೆಳಗೆ ಇದೆ',
+      "Get into forearm plank position": 'ಫೋರ್‌ಆರ್ಮ್ ಪ್ಲ್ಯಾಂಕ್ ಸ್ಥಿತಿಗೆ ಬನ್ನಿ',
       
       // --- Pushups ---
       'Keep your body straight': 'ದೇಹವನ್ನು ನೇರವಾಗಿಡಿ',
-      'Straighten your legs': 'ಕಾಲುಗಳನ್ನು ನೇರಗೊಳಿಸಿ',
+      // 'Straighten your legs': 'ಕಾಲುಗಳನ್ನು ನೇರಗೊಳಿಸಿ',
       "Don't flare your elbows": 'ಮೊಣಕೈಗಳನ್ನು ಅಗಲಿಸಬೇಡಿ',
       'Tuck your elbows closer': 'ಮೊಣಕೈಗಳನ್ನು ಹತ್ತಿರ ಇರಿಸಿ',
       'Good Rep!': 'ಉತ್ತಮವಾಗಿದೆ!',
+
+     
+    //  "Not tracking. Are you in frame?": 'ट्रैकिंग नहीं हो रही। क्या आप फ्रेम में हैं?',
+    
+     
+    
+      "Hands too far forward": 'ಹಸ್ತಗಳು ತುಂಬಾ ಮುಂದೆ ಇವೆ',
+      "Hips too high": 'ಕೂಲ್ಹೆಗಳು ತುಂಬಾ ಎತ್ತರದಲ್ಲಿವೆ',
+      "Hips too low":  'ಕೂಲ್ಹೆಗಳು ತುಂಬಾ ಕೆಳಗೆ ಇವೆ',
+
 
       // --- Shoulder Press ---
       'Bring your elbows up': 'ಮೊಣಕೈಗಳನ್ನು ಮೇಲೆ ತನ್ನಿ',

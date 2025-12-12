@@ -24,7 +24,7 @@ class _ExerciseMenuScreenState extends State<ExerciseMenuScreen> {
     Exercise(name: 'SHOULDER PRESS', imagePath: 'assets/shoulder_press.jpg'),
     Exercise(name: 'BARBELL CURLS', imagePath: 'assets/barbell_curls.webp'),
     Exercise(name: 'PLANK', imagePath: 'assets/plank.webp'),
-    Exercise(name: 'SQUATS', imagePath: 'assets/squats.jpg'),
+    // Exercise(name: 'SQUATS', imagePath: 'assets/squats.jpg'),
     Exercise(name: 'PUSHUPS', imagePath: 'assets/Pushup.webp'),
   ];
 
